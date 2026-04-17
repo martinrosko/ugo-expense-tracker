@@ -1,0 +1,393 @@
+<?xml version="1.0"?>
+<Metadata xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://schemas.resco.net/XRM/MetadataService">
+  <Entities>
+    <Entity Name="activityparty" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="activitypointer" OwnershipType="User" EntityAttributes="Activity" EntityTypeCode="activitytypecode" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="actualdurationminutes" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="description" Type="String" Permissions="Read Create Update" />
+        <Attribute Name="latitude" Type="Float" Min="-180" Max="180" Precision="6" Permissions="Read Create Update" />
+        <Attribute Name="longitude" Type="Float" Min="-180" Max="180" Precision="6" Permissions="Read Create Update" />
+        <Attribute Name="prioritycode" Type="Picklist" Permissions="Read Create Update" OptionSetValues="0;1;2" />
+      </Attributes>
+    </Entity>
+    <Entity Name="annotation" OwnershipType="User" PrimaryFieldName="subject" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="documentbody" Type="String" Permissions="Read Create Update" IsBlobStorageEnabled="true" />
+        <Attribute Name="filename" Type="String" Length="255" Permissions="Read Create Update" />
+        <Attribute Name="filesize" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="isdocument" Type="Boolean" Required="true" Default="0" Permissions="Read Create Update" />
+        <Attribute Name="mimetype" Type="String" Length="256" Permissions="Read Create Update" />
+        <Attribute Name="notetext" Type="String" Length="100000" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="objectid" Type="Lookup" LookupTargets="task;resco_questionnaire;resco_questionnaireanswer" Permissions="Read Create Update" />
+        <Attribute Name="subject" Length="500" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="attributemap" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="businessunit" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="category" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="color_dark" Type="String" Length="9" Permissions="Read Create Update" />
+        <Attribute Name="color_light" Type="String" Length="9" Permissions="Read Create Update" />
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="duplicaterulecondition" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="entitymap" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="exercise" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="category" Type="Lookup" Required="true" LookupTargets="category" Permissions="Read Create Update" />
+        <Attribute Name="description" Type="String" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="uoa" Type="Picklist" Required="true" Default="10000" Permissions="Read Create Update" OptionSetValues="10000;10001;10002">
+          <Description>Weight, distance or intensity of the exercise</Description>
+        </Attribute>
+        <Attribute Name="uor" Type="Picklist" Default="10000" Permissions="Read Create Update" OptionSetValues="10000;10001;10002;10003;10004">
+          <Description>Either number of repetitions of the exercise in one serie or duration of that exercise in seconds or meters</Description>
+        </Attribute>
+      </Attributes>
+    </Entity>
+    <Entity Name="mobilelocalization" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="mobileproject" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="organization" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="auditretention" Type="Integer" System="false" Permissions="Read Update" />
+        <Attribute Name="auditsettings" Length="5000" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="audittype" Type="Integer" System="false" Permissions="Read Update" />
+        <Attribute Name="blobstoragesettings" Length="5000" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="fullnameconventioncode" Default="0" Permissions="Read Create Update" />
+        <Attribute Name="smsoutgoingsettings" Length="5000" Permissions="Read Create Update" Format="TextArea" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_audit" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="resco_fieldtype" Permissions="Read Create Update" OptionSetValues="-1;0;1;2;3;4;5;6;7;8;9;10;11;12;13;14" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_autonumber" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_mobileaudit" OwnershipType="User" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_mobiledevice" EntityAttributes="Hidden" PrimaryFieldName="resco_deviceid" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Type="String" Length="100" Required="true" System="false" Permissions="Read Create Update" Format="Text" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_mobilelicense" OwnershipType="User" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_mobilereport" OwnershipType="User" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_mobilesecuritypolicy" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_pluginassembly" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_question" OwnershipType="User" PrimaryKeyName="resco_questionid" PrimaryFieldName="resco_name" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="resco_answeredon" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="resco_defaultvalue" Type="String" Length="1000" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="resco_description" Type="String" Length="2000" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="resco_displayformat" Type="Picklist" Required="true" Default="473220000" Permissions="Read Create Update" OptionSetValues="473220000;473220001;473220002;473220003;473220004;473220005;473220006;473220007;473220008;473220009;473220010;473220011;473220012;473220013;473220014;473220015;473220016;473220017;473220018;473220019;473220020" />
+        <Attribute Name="resco_icon" Type="String" Length="1000" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="resco_index" Type="Integer" Required="true" Permissions="Read Create Update" />
+        <Attribute Name="resco_isseparator" Type="Boolean" Required="true" Default="0" Permissions="Read Create Update" />
+        <Attribute Name="resco_kind" Type="Picklist" Required="true" Default="473220016" Permissions="Read Create Update" OptionSetValues="473220000;473220001;473220002;473220003;473220004;473220005;473220006;473220007;473220008;473220009;473220010;473220011;473220012;473220013;473220014;473220015;473220016;473220017;473220018;473220019;473220020;473220021;473220022;473744289" />
+        <Attribute Name="resco_label" Type="String" Length="320" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="resco_max" Type="String" Length="100" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="resco_min" Type="String" Length="100" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="resco_options" Type="String" Length="2147483647" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="resco_precision" Type="Integer" Min="-2" Max="10" Permissions="Read Create Update" />
+        <Attribute Name="resco_questiongroupid" Type="Lookup" LookupTargets="resco_questiongroup" LookupDeleteConstraint="Cascade" Permissions="Read Create Update" />
+        <Attribute Name="resco_questionnaireid" Type="Lookup" Required="true" LookupTargets="resco_questionnaire" LookupDeleteConstraint="Cascade" Permissions="Read Create Update" />
+        <Attribute Name="resco_required" Type="Picklist" Required="true" Default="473220000" Permissions="Read Create Update" OptionSetValues="473220000;473220001;473220002;473220003;473220004" />
+        <Attribute Name="resco_style" Type="String" Length="2000" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="resco_value" Type="String" Length="4000" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="resco_valuelabel" Type="String" Length="4000" Permissions="Read Create Update" Format="Text" />
+        <Attribute Name="statuscode" Default="1" Permissions="Read Create Update" OptionSetValues="0,1,473220000,473220001,473220002,473220003,473220004;1,2" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_questiongroup" OwnershipType="User" PrimaryKeyName="resco_questiongroupid" PrimaryFieldName="resco_name" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="resco_description" Type="String" Length="2000" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="resco_index" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="resco_questionnaireid" Type="Lookup" Required="true" LookupTargets="resco_questionnaire" LookupDeleteConstraint="Cascade" Permissions="Read Create Update" />
+        <Attribute Name="statuscode" Default="1" Permissions="Read Create Update" OptionSetValues="0,1,473220000,473220001,473220002,473220003,473220004;1,2" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_questionnaire" OwnershipType="User" PrimaryKeyName="resco_questionnaireid" PrimaryFieldName="resco_name" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="resco_description" Type="String" Length="2000" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="resco_istemplate" Type="Boolean" Required="true" Default="0" Permissions="Read Create Update" />
+        <Attribute Name="resco_languagecode" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="resco_rules" Type="String" Length="2147483647" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="resco_script" Type="String" Length="2147483647" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="resco_styles" Type="String" Length="2147483647" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="resco_templateid" Type="Lookup" LookupTargets="resco_questionnaire" Permissions="Read Create Update" />
+        <Attribute Name="statuscode" Default="1" Permissions="Read Create Update" OptionSetValues="0,1,473220000,473220001,473220002,473220003,473220004;1,2" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_usersettings" OwnershipType="User" EntityAttributes="Hidden" PrimaryKeyName="resco_usersettingsid" PrimaryFieldName="resco_name" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="resco_name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_workflow" OwnershipType="User" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="runas" Type="Integer" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="resco_workflowlog" OwnershipType="User" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="role" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="roleprivileges" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_account" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_accounttype" Type="Picklist" Default="1" Permissions="Read Create Update" OptionSetValues="1;2;3;100" />
+        <Attribute Name="rw_initialbalance" Type="Money" Precision="-2" Permissions="Read Create Update" />
+        <Attribute Name="rw_isdefault" Type="Boolean" Default="0" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_bankticket" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_accountid" Type="Lookup" LookupTargets="rw_account" Permissions="Read Create Update" />
+        <Attribute Name="rw_amount" Type="Money" Precision="-2" Permissions="Read Create Update" />
+        <Attribute Name="rw_constantsymbol" Type="String" Length="10" Permissions="Read Create Update" />
+        <Attribute Name="rw_executedon" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="rw_partneraccountnumber" Type="String" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="rw_partnername" Type="String" Length="256" Permissions="Read Create Update" />
+        <Attribute Name="rw_reference" Type="String" Length="256" Permissions="Read Create Update" />
+        <Attribute Name="rw_specificsymbol" Type="String" Length="10" Permissions="Read Create Update" />
+        <Attribute Name="rw_ticketid" Type="String" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="rw_variablesymbol" Type="String" Length="10" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_budget" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_amount" Type="Money" Precision="-2" Permissions="Read Create Update" />
+        <Attribute Name="rw_defaultaccountid" Type="Lookup" LookupTargets="rw_account" Permissions="Read Create Update" />
+        <Attribute Name="rw_parentid" Type="Lookup" LookupTargets="rw_plan" Permissions="Read Create Update" />
+        <Attribute Name="rw_templateid" Type="Lookup" LookupTargets="rw_budget" Permissions="Read Create Update" />
+        <Attribute Name="statuscode" Permissions="Read Create Update" OptionSetValues="0,1,2,0;1,3,4" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_category" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_parentcategoryid" Type="Lookup" LookupTargets="rw_category" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_plan" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_defaultaccountid" Type="Lookup" LookupTargets="rw_account" Permissions="Read Create Update" />
+        <Attribute Name="rw_enddate" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="rw_intervaltype" Type="Picklist" Permissions="Read Create Update" OptionSetValues="0;1;2;3" />
+        <Attribute Name="rw_istemplate" Type="Boolean" Default="1" Permissions="Read Create Update" />
+        <Attribute Name="rw_recurrenceconfig" Type="String" Length="4096" Permissions="Read Create Update" />
+        <Attribute Name="rw_startdate" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="rw_templateid" Type="Lookup" LookupTargets="rw_plan" Permissions="Read Create Update" />
+        <Attribute Name="statuscode" Permissions="Read Create Update" OptionSetValues="0,1,2,0;1,3,4" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_tag" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_color" Type="String" Length="9" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_tagobject" CustomerOwnershipField="" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_objectid" Type="Lookup" Required="false" System="false" LookupTargets="rw_transaction;rw_plan;rw_budget" Permissions="Read Create Update" Format="None" />
+        <Attribute Name="rw_tagid" Type="Lookup" Required="false" System="false" LookupTargets="rw_tag" Permissions="Read Create Update" Format="None" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_transaction" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_amount" Type="Money" Precision="-2" Permissions="Read Create Update" />
+        <Attribute Name="rw_bankticketid" Type="Lookup" LookupTargets="rw_bankticket" Permissions="Read Create Update" />
+        <Attribute Name="rw_duedateconfig" Type="String" Length="1024" Permissions="Read Create Update" />
+        <Attribute Name="rw_executedon" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="rw_fromaccountid" Type="Lookup" LookupTargets="rw_account" Permissions="Read Create Update" />
+        <Attribute Name="rw_parentid" Type="Lookup" LookupTargets="rw_plan;rw_budget" Permissions="Read Create Update" />
+        <Attribute Name="rw_plannedamount" Type="Money" Precision="-2" Permissions="Read Create Update" />
+        <Attribute Name="rw_plannedon" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="rw_templateid" Type="Lookup" LookupTargets="rw_transaction" Permissions="Read Create Update" />
+        <Attribute Name="rw_ticketid" Type="String" Length="4096" Permissions="Read Create Update" />
+        <Attribute Name="rw_toaccountid" Type="Lookup" LookupTargets="rw_account" Permissions="Read Create Update" />
+        <Attribute Name="rw_type" Type="Picklist" Permissions="Read Create Update" OptionSetValues="1;2" />
+        <Attribute Name="statuscode" Permissions="Read Create Update" OptionSetValues="0,1,2,0;1,3,4" />
+      </Attributes>
+    </Entity>
+    <Entity Name="rw_transactiontag" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="rw_amount" Type="Money" Precision="-2" Permissions="Read Create Update" />
+        <Attribute Name="rw_tagid" Type="Lookup" LookupTargets="rw_tag" Permissions="Read Create Update" />
+        <Attribute Name="rw_transactionid" Type="Lookup" LookupTargets="rw_transaction" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="serie" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="actual_amount" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="actual_reps" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="amount" Type="Integer" Required="true" Permissions="Read Create Update">
+          <Description>Weight or duration of the serie</Description>
+        </Attribute>
+        <Attribute Name="comment" Type="String" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="difficulty" Type="Integer" Min="1" Max="10" Permissions="Read Create Update">
+          <Description>How difficult was the serie</Description>
+        </Attribute>
+        <Attribute Name="duration" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="exercise" Type="Lookup" Required="true" LookupTargets="exercise" Permissions="Read Create Update" />
+        <Attribute Name="finished_on" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="order" Type="Integer" Required="true" Min="1" Max="20" Permissions="Read Create Update">
+          <Description>Order of the serie in a set or super set</Description>
+        </Attribute>
+        <Attribute Name="reps" Type="Integer" Permissions="Read Create Update">
+          <Description>Number of repetitions</Description>
+        </Attribute>
+        <Attribute Name="setid" Type="Lookup" LookupTargets="set" LookupDeleteConstraint="Cascade" Permissions="Read Create Update" />
+        <Attribute Name="started_on" Type="DateTime" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="statuscode" Permissions="Read Create Update" OptionSetValues="0,1,10000,10001,10002;1,2" />
+      </Attributes>
+    </Entity>
+    <Entity Name="serie_template" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="amount" Type="Integer" Permissions="Read Create Update">
+          <Description>Weight or duration of the serie</Description>
+        </Attribute>
+        <Attribute Name="exercise" Type="Lookup" Required="true" LookupTargets="exercise" Permissions="Read Create Update" />
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="order" Type="Integer" Min="1" Max="20" Permissions="Read Create Update">
+          <Description>Order of the serie in a set or super set</Description>
+        </Attribute>
+        <Attribute Name="reps" Type="Integer" Permissions="Read Create Update">
+          <Description>Number of repetitions of the exercise</Description>
+        </Attribute>
+        <Attribute Name="setid" Type="Lookup" LookupTargets="set_template" LookupDeleteConstraint="Cascade" Permissions="Read Create Update" />
+        <Attribute Name="statuscode" Permissions="Read Create Update" OptionSetValues="0,1,10000,10001;1,2" />
+      </Attributes>
+    </Entity>
+    <Entity Name="set" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="duration" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="order" Type="Integer" Min="1" Max="20" Permissions="Read Create Update" />
+        <Attribute Name="statuscode" Permissions="Read Create Update" OptionSetValues="0,1,10000,10001,10002;1,2" />
+        <Attribute Name="workoutid" Type="Lookup" LookupTargets="workout" LookupDeleteConstraint="Cascade" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="set_template" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="order" Type="Integer" Required="true" Min="1" Max="30" Permissions="Read Create Update">
+          <Description>Order of the set in a workout</Description>
+        </Attribute>
+        <Attribute Name="workout" Type="Lookup" Required="true" LookupTargets="workout_template" LookupDeleteConstraint="Cascade" Permissions="Read Create Update">
+          <Description>Workout for which the set is defined</Description>
+        </Attribute>
+      </Attributes>
+    </Entity>
+    <Entity Name="systemuser" OwnershipType="User" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="advantagesettings" Type="Binary" System="true" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="task" EntityAttributes="Activity" EntityParent="activitypointer" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="owningbusinessunit" Permissions="Read Create Update" />
+        <Attribute Name="statecode" Permissions="Read Create Update" OptionSetValues="0;1;2" />
+        <Attribute Name="statuscode" Default="2" Permissions="Read Create Update" OptionSetValues="0,2,3,4,7;1,5;2,6" />
+      </Attributes>
+    </Entity>
+    <Entity Name="test_masterentity" CustomerOwnershipField="" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="date" Type="DateTime" Required="false" System="false" Precision="0" Permissions="Read Create Update" Format="DateAndTime" />
+        <Attribute Name="lkp_secondary" Type="Lookup" Required="false" System="false" LookupTargets="test_secondaryentity" Permissions="Read Create Update" Format="None" />
+        <Attribute Name="number" Type="Integer" Required="false" System="false" Min="" Max="" Permissions="Read Create Update" Format="None" />
+      </Attributes>
+    </Entity>
+    <Entity Name="test_secondaryentity" CustomerOwnershipField="" IsAuditEnabled="false" />
+    <Entity Name="trackingdelete" EntityAttributes="Hidden" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="transactioncurrency" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+      </Attributes>
+    </Entity>
+    <Entity Name="workout" EntityAttributes="Activity" EntityParent="activitypointer" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="comments" Type="String" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="duration" Type="Integer" Permissions="Read Create Update" />
+        <Attribute Name="owningbusinessunit" Permissions="Read Create Update" />
+        <Attribute Name="statuscode" Permissions="Read Create Update" OptionSetValues="0,1,10000,10001;1,2" />
+      </Attributes>
+    </Entity>
+    <Entity Name="workout_template" IsAuditEnabled="false">
+      <Attributes>
+        <Attribute Name="description" Type="String" Permissions="Read Create Update" Format="TextArea" />
+        <Attribute Name="name" Length="100" Permissions="Read Create Update" />
+        <Attribute Name="subtype" Type="Picklist" Default="10000" Permissions="Read Create Update" OptionSetValues="10000;10001;10002;10003;10004;10005;10006" />
+        <Attribute Name="type" Type="Picklist" Required="true" Default="10001" Permissions="Read Create Update" OptionSetValues="10000;10001;10002;10003" />
+      </Attributes>
+    </Entity>
+  </Entities>
+</Metadata>

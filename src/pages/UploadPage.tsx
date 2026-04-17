@@ -1,33 +1,41 @@
 import { useState } from 'react'
-import { Upload, Table, Button, Typography, App as AntApp, Space } from 'antd'
+import { Upload, Table, Button, Typography, App as AntApp, Space, Select } from 'antd'
 import { InboxOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { parseCSV } from '../features/csv/parseCSV'
-import { matchTransactions } from '../features/matching/matcher'
-import { fetchPartners } from '../api/partners'
+import { matchAll } from '../features/matching/matcher'
+import { fetchUserAccounts, fetchPaymentPartners } from '../api/accounts'
+import { fetchActivePlans } from '../api/plans'
 import { fetchBudgets } from '../api/budgets'
+import { fetchUnmatchedTransactions } from '../api/transactions'
 import { fetchTags } from '../api/tags'
-import type { BankTransaction } from '../features/csv/types'
-import type { MatchedTransaction } from '../features/matching/matcher'
+import type { CsvRow } from '../features/csv/types'
+import type { RwAccount } from '../types/resco'
 
 const { Dragger } = Upload
 const { Title, Text } = Typography
 
 const PREVIEW_COLUMNS = [
-  { title: 'Date', dataIndex: 'date', key: 'date', width: 110 },
-  { title: 'Description', dataIndex: 'description', key: 'description' },
+  { title: 'Date', dataIndex: 'executedon', key: 'executedon', width: 110 },
+  { title: 'Partner', dataIndex: 'partnername', key: 'partnername' },
+  { title: 'Reference', dataIndex: 'reference', key: 'reference' },
   {
     title: 'Amount',
     dataIndex: 'amount',
     key: 'amount',
     width: 110,
-    render: (v: number, row: BankTransaction) =>
-      `${v.toFixed(2)} ${row.currency}`,
+    render: (v: number) => (
+      <span style={{ color: v < 0 ? '#cf1322' : '#389e0d' }}>
+        {v.toFixed(2)}
+      </span>
+    ),
   },
 ]
 
 export default function UploadPage() {
-  const [transactions, setTransactions] = useState<BankTransaction[]>([])
+  const [csvRows, setCsvRows] = useState<CsvRow[]>([])
+  const [userAccounts, setUserAccounts] = useState<RwAccount[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState<string>()
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
   const { message } = AntApp.useApp()
@@ -35,34 +43,53 @@ export default function UploadPage() {
   async function handleFile(file: File) {
     try {
       const parsed = await parseCSV(file)
-      setTransactions(parsed)
-      message.success(`Parsed ${parsed.length} transactions`)
+      setCsvRows(parsed)
+      message.success(`Parsed ${parsed.length} rows`)
+      // Load bank accounts for the account selector
+      if (userAccounts.length === 0) {
+        const accounts = await fetchUserAccounts()
+        setUserAccounts(accounts)
+        const def = accounts.find((a) => a.rw_isdefault)
+        if (def) setSelectedAccountId(def.rw_accountid)
+      }
     } catch {
       message.error('Failed to parse CSV. Check the file format.')
     }
-    return false // prevent default upload behaviour
+    return false
   }
 
   async function handleAnalyze() {
-    if (transactions.length === 0) return
+    if (csvRows.length === 0) return
     setLoading(true)
     try {
-      const [partners, budgets, tags] = await Promise.all([
-        fetchPartners(),
-        fetchBudgets(),
+      // 1. Fetch active plans and their budgets
+      const plans = await fetchActivePlans()
+      const planIds = plans.map((p) => p.rw_planid)
+      const budgets = await fetchBudgets(planIds)
+      const budgetIds = budgets.map((b) => b.rw_budgetid)
+
+      // 2. Fetch unmatched planned transactions + reference data
+      const [transactions, partners, tags] = await Promise.all([
+        fetchUnmatchedTransactions([...planIds, ...budgetIds]),
+        fetchPaymentPartners(),
         fetchTags(),
       ])
-      const matched: MatchedTransaction[] = matchTransactions(transactions, partners, budgets, tags)
-      navigate('/review', { state: { matched } })
+
+      // 3. Run matching engine
+      const results = matchAll(csvRows, transactions, budgets, plans, partners, tags)
+
+      navigate('/review', {
+        state: { results, transactions, budgets, plans, partners, tags, accountId: selectedAccountId },
+      })
     } catch {
-      message.error('Failed to load reference data from Resco Cloud.')
+      message.error('Failed to load data from Resco Cloud. Check your .env.local credentials.')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+    <Space orientation="vertical" size="large" style={{ width: '100%' }}>
       <Title level={3}>Upload Bank CSV</Title>
 
       <Dragger
@@ -75,14 +102,27 @@ export default function UploadPage() {
           <InboxOutlined />
         </p>
         <p className="ant-upload-text">Click or drag a CSV file here</p>
-        <p className="ant-upload-hint">Supports your bank's standard export format.</p>
+        <p className="ant-upload-hint">Supports your bank's standard CSV export format.</p>
       </Dragger>
 
-      {transactions.length > 0 && (
+      {csvRows.length > 0 && (
         <>
-          <Text type="secondary">{transactions.length} rows parsed</Text>
+          <Text type="secondary">{csvRows.length} rows parsed</Text>
+
+          {userAccounts.length > 0 && (
+            <div>
+              <Text strong style={{ marginRight: 8 }}>Bank account in this CSV:</Text>
+              <Select
+                style={{ width: 280 }}
+                value={selectedAccountId}
+                onChange={setSelectedAccountId}
+                options={userAccounts.map((a) => ({ value: a.rw_accountid, label: a.name }))}
+              />
+            </div>
+          )}
+
           <Table
-            dataSource={transactions}
+            dataSource={csvRows}
             columns={PREVIEW_COLUMNS}
             rowKey={(_, i) => String(i)}
             size="small"
@@ -90,10 +130,11 @@ export default function UploadPage() {
             scroll={{ x: true }}
           />
           <Button type="primary" onClick={handleAnalyze} loading={loading}>
-            Analyze & Match
+            Analyze &amp; Match
           </Button>
         </>
       )}
     </Space>
   )
 }
+

@@ -1,29 +1,42 @@
 import Papa from 'papaparse'
-import type { BankTransaction } from './types'
+import type { CsvRow } from './types'
 
-// Column mapping for the bank CSV export.
-// Update field names here when the actual CSV headers are confirmed.
-const COLUMN_MAP = {
-  date: 'Date',
-  description: 'Description',
+// ─── Column mapping ──────────────────────────────────────────────────────────
+// These are PLACEHOLDER header names from a generic bank CSV export.
+// UPDATE these values once you share a sample CSV from your specific bank.
+const COLUMN_MAP: Record<keyof CsvRow, string> = {
+  executedon: 'Date',
   amount: 'Amount',
-  currency: 'Currency',
+  partnername: 'Partner Name',
+  partneraccountnumber: 'Partner Account Number',
+  reference: 'Reference',
+  variablesymbol: 'Variable Symbol',
+  constantsymbol: 'Constant Symbol',
+  specificsymbol: 'Specific Symbol',
+  ticketid: 'Transaction ID',
 }
 
-export function parseCSV(file: File): Promise<BankTransaction[]> {
+export function parseCSV(file: File): Promise<CsvRow[]> {
   return new Promise((resolve, reject) => {
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
       complete(results) {
         try {
-          const transactions: BankTransaction[] = results.data.map((row) => ({
-            date: row[COLUMN_MAP.date]?.trim() ?? '',
-            description: row[COLUMN_MAP.description]?.trim() ?? '',
-            amount: parseFloat(row[COLUMN_MAP.amount]?.replace(',', '.') ?? '0'),
-            currency: row[COLUMN_MAP.currency]?.trim() ?? 'EUR',
+          const rows: CsvRow[] = results.data.map((row) => ({
+            executedon: row[COLUMN_MAP.executedon]?.trim() ?? '',
+            amount: parseFloat(
+              (row[COLUMN_MAP.amount] ?? '0').replace(/\s/g, '').replace(',', '.'),
+            ),
+            partnername: row[COLUMN_MAP.partnername]?.trim() ?? '',
+            partneraccountnumber: row[COLUMN_MAP.partneraccountnumber]?.trim() ?? '',
+            reference: row[COLUMN_MAP.reference]?.trim() ?? '',
+            variablesymbol: row[COLUMN_MAP.variablesymbol]?.trim() ?? '',
+            constantsymbol: row[COLUMN_MAP.constantsymbol]?.trim() ?? '',
+            specificsymbol: row[COLUMN_MAP.specificsymbol]?.trim() ?? '',
+            ticketid: row[COLUMN_MAP.ticketid]?.trim() ?? '',
           }))
-          resolve(transactions)
+          resolve(rows)
         } catch (err) {
           reject(err)
         }

@@ -1,7 +1,13 @@
-import type { PaymentPartner, Budget, Tag } from '../../types/resco'
+import type { RwAccount, RwBudget, RwTag } from '../../types/resco'
+import type { CsvRow } from '../csv/types'
+
+// ─── Configurable rule sets ───────────────────────────────────────────────────
+// Add entries as you identify recurring patterns in your bank exports.
 
 export interface PartnerRule {
-  keywords: string[]   // substrings to match in transaction description (case-insensitive)
+  /** Substrings to match against CsvRow.partnername (case-insensitive). */
+  keywords: string[]
+  /** rw_accountid of the matching payment-partner account. */
   partnerId: string
 }
 
@@ -10,53 +16,77 @@ export interface TagRule {
   tagId: string
 }
 
-// ---- Partner rules ----
-// Add a new entry for each known payment partner.
-// Example: { keywords: ['netflix', 'NETFLIX'], partnerId: 'partner-uuid' }
-export const partnerRules: PartnerRule[] = []
+export const partnerRules: PartnerRule[] = [
+  // Example: { keywords: ['netflix', 'NETFLIX INC'], partnerId: 'xxxxxxxx-...' },
+]
 
-// ---- Tag rules ----
-// Example: { keywords: ['supermarket', 'lidl', 'kaufland'], tagId: 'tag-uuid' }
-export const tagRules: TagRule[] = []
+export const tagRules: TagRule[] = [
+  // Example: { keywords: ['lidl', 'kaufland', 'tesco'], tagId: 'xxxxxxxx-...' },
+]
 
-// ---- Budget matching ----
-// Matches a transaction date to a budget by its start/end date range.
-export function findBudgetForDate(
-  date: string,
-  budgets: Budget[],
-): Budget | undefined {
-  return budgets.find((b) => date >= b.startDate && date <= b.endDate)
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Simple similarity: 1 if b is a substring of a (or vice-versa), else token overlap. */
+export function stringSimilarity(a: string, b: string): number {
+  const la = a.toLowerCase()
+  const lb = b.toLowerCase()
+  if (la.includes(lb) || lb.includes(la)) return 1
+  const tokensA = la.split(/\s+/)
+  const tokensB = new Set(lb.split(/\s+/))
+  const overlap = tokensA.filter((t) => tokensB.has(t)).length
+  return overlap / Math.max(tokensA.length, tokensB.size)
 }
 
-// ---- Partner matching ----
-export function findPartnerForDescription(
-  description: string,
-  partners: PaymentPartner[],
-  rules: PartnerRule[],
-): PaymentPartner | undefined {
-  const lower = description.toLowerCase()
-  for (const rule of rules) {
-    if (rule.keywords.some((kw) => lower.includes(kw.toLowerCase()))) {
-      return partners.find((p) => p.id === rule.partnerId)
+export function findPartner(
+  partnername: string,
+  partners: RwAccount[],
+): RwAccount | undefined {
+  if (!partnername) return undefined
+  // 1. Rule-based lookup
+  for (const rule of partnerRules) {
+    if (rule.keywords.some((kw) => partnername.toLowerCase().includes(kw.toLowerCase()))) {
+      return partners.find((p) => p.rw_accountid === rule.partnerId)
     }
   }
-  // Fallback: fuzzy name match directly against partner names
-  return partners.find((p) => lower.includes(p.name.toLowerCase()))
+  // 2. Fuzzy name match
+  let best: RwAccount | undefined
+  let bestScore = 0
+  for (const p of partners) {
+    const score = stringSimilarity(partnername, p.name)
+    if (score > bestScore) {
+      bestScore = score
+      best = p
+    }
+  }
+  return bestScore >= 0.5 ? best : undefined
 }
 
-// ---- Tag matching ----
-export function findTagsForDescription(
-  description: string,
-  tags: Tag[],
-  rules: TagRule[],
-): Tag[] {
-  const lower = description.toLowerCase()
-  const matched: Tag[] = []
-  for (const rule of rules) {
-    if (rule.keywords.some((kw) => lower.includes(kw.toLowerCase()))) {
-      const tag = tags.find((t) => t.id === rule.tagId)
+export function findTagsForRow(row: CsvRow, tags: RwTag[]): RwTag[] {
+  const text = `${row.partnername} ${row.reference}`.toLowerCase()
+  const matched: RwTag[] = []
+  for (const rule of tagRules) {
+    if (rule.keywords.some((kw) => text.includes(kw.toLowerCase()))) {
+      const tag = tags.find((t) => t.rw_tagid === rule.tagId)
       if (tag) matched.push(tag)
     }
   }
   return matched
 }
+
+export function suggestBudget(
+  row: CsvRow,
+  budgets: RwBudget[],
+  partners: RwAccount[],
+): RwBudget | undefined {
+  // Heuristic: if a partner is matched, pick the budget whose default account
+  // matches the partner, or fall back to the first active budget.
+  const partner = findPartner(row.partnername, partners)
+  if (partner) {
+    const match = budgets.find(
+      (b) => b._rw_defaultaccountid_value === partner.rw_accountid,
+    )
+    if (match) return match
+  }
+  return budgets[0]
+}
+
