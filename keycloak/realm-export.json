@@ -1,0 +1,35 @@
+{
+  "realm": "ugo",
+  "displayName": "Ugo Finance",
+  "enabled": true,
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "ssoSessionMaxLifespan": 36000,
+  "accessTokenLifespan": 300,
+  "clients": [
+    {
+      "clientId": "ugo-frontend",
+      "name": "Ugo Frontend SPA",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    }
+  ],
+  "roles": {
+    "realm": [
+      { "name": "app-user", "description": "Regular application user" },
+      { "name": "app-admin", "description": "Application administrator" }
+    ]
+  },
+  "defaultRoles": ["app-user"]
+}

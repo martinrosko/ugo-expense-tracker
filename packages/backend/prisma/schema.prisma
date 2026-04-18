@@ -1,0 +1,178 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User (mirrored from Keycloak on first login) ─────────────────────────────
+
+model User {
+  id             String        @id            // Keycloak subject UUID
+  email          String        @unique
+  name           String
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+  businessUnitId String?
+  accounts       Account[]
+  plans          Plan[]
+  tags           Tag[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model BusinessUnit {
+  id        String   @id @default(uuid())
+  name      String
+  users     User[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Accounts ─────────────────────────────────────────────────────────────────
+
+model Account {
+  id             String      @id @default(uuid())
+  name           String
+  type           AccountType
+  initialBalance Decimal     @default(0) @db.Decimal(18, 4)
+  isDefault      Boolean     @default(false)
+  owner          User        @relation(fields: [ownerId], references: [id])
+  ownerId        String
+
+  bankTickets       BankTicket[]
+  fromTransactions  Transaction[] @relation("TxFromAccount")
+  toTransactions    Transaction[] @relation("TxToAccount")
+  defaultForBudgets Budget[]      @relation("BudgetDefaultAccount")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum AccountType {
+  CASH
+  BANK
+  INVESTMENT
+  PAYMENT_PARTNER
+}
+
+// ─── Plans & Budgets ──────────────────────────────────────────────────────────
+
+model Plan {
+  id           String           @id @default(uuid())
+  name         String
+  startDate    DateTime         @db.Date
+  endDate      DateTime         @db.Date
+  intervalType PlanIntervalType
+  isTemplate   Boolean          @default(false)
+  template     Plan?            @relation("PlanFromTemplate", fields: [templateId], references: [id])
+  templateId   String?
+  instances    Plan[]           @relation("PlanFromTemplate")
+  owner        User             @relation(fields: [ownerId], references: [id])
+  ownerId      String
+  budgets      Budget[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+enum PlanIntervalType {
+  ONE_TIME
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+model Budget {
+  id               String   @id @default(uuid())
+  name             String
+  amount           Decimal? @db.Decimal(18, 4)
+  plan             Plan     @relation(fields: [planId], references: [id])
+  planId           String
+  defaultAccount   Account? @relation("BudgetDefaultAccount", fields: [defaultAccountId], references: [id])
+  defaultAccountId String?
+  template         Budget?  @relation("BudgetFromTemplate", fields: [templateId], references: [id])
+  templateId       String?
+  instances        Budget[] @relation("BudgetFromTemplate")
+  transactions     Transaction[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// ─── Bank Tickets (raw bank statement rows) ───────────────────────────────────
+
+model BankTicket {
+  id                   String   @id @default(uuid())
+  name                 String?
+  amount               Decimal  @db.Decimal(18, 4)
+  executedOn           DateTime @db.Date
+  partnerName          String?
+  partnerAccountNumber String?
+  reference            String?
+  variableSymbol       String?
+  constantSymbol       String?
+  specificSymbol       String?
+  /// Bank-assigned transaction ID — used for deduplication
+  ticketId             String?
+  account              Account  @relation(fields: [accountId], references: [id])
+  accountId            String
+  transaction          Transaction?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  /// Prevent importing the same bank row twice for the same account
+  @@unique([accountId, ticketId])
+}
+
+// ─── Transactions ─────────────────────────────────────────────────────────────
+
+model Transaction {
+  id            String          @id @default(uuid())
+  name          String
+  amount        Decimal?        @db.Decimal(18, 4)
+  plannedAmount Decimal?        @db.Decimal(18, 4)
+  plannedOn     DateTime?       @db.Date
+  executedOn    DateTime?       @db.Date
+  type          TransactionType
+  bankTicket    BankTicket?     @relation(fields: [bankTicketId], references: [id])
+  bankTicketId  String?         @unique
+  budget        Budget          @relation(fields: [budgetId], references: [id])
+  budgetId      String
+  fromAccount   Account?        @relation("TxFromAccount", fields: [fromAccountId], references: [id])
+  fromAccountId String?
+  toAccount     Account?        @relation("TxToAccount", fields: [toAccountId], references: [id])
+  toAccountId   String?
+  tags          TransactionTag[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+enum TransactionType {
+  EXPENSE
+  INCOME
+}
+
+// ─── Tags ─────────────────────────────────────────────────────────────────────
+
+model Tag {
+  id           String           @id @default(uuid())
+  name         String
+  color        String?
+  owner        User             @relation(fields: [ownerId], references: [id])
+  ownerId      String
+  transactions TransactionTag[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+model TransactionTag {
+  id            String      @id @default(uuid())
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  transactionId String
+  tag           Tag         @relation(fields: [tagId], references: [id])
+  tagId         String
+  amount        Decimal?    @db.Decimal(18, 4)
+  createdAt     DateTime    @default(now())
+
+  @@unique([transactionId, tagId])
+}
