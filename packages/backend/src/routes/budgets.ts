@@ -7,26 +7,44 @@ export const budgetsRouter = Router()
 // GET /api/budgets?planId=xxx
 budgetsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const { planId } = req.query
-  const budgets = await db.budget.findMany({
+  const raw = await db.budget.findMany({
     where: {
       plan: { ownerId: req.user!.sub },
       ...(planId ? { planId: String(planId) } : {}),
     },
-    include: { transactions: { select: { id: true, amount: true, type: true } } },
+    include: {
+      template: { select: { name: true, amount: true, defaultAccountId: true } },
+      transactions: { select: { id: true, amount: true, type: true } },
+    },
     orderBy: { name: 'asc' },
   })
+  const budgets = raw.map(({ template, ...b }) => ({
+    ...b,
+    name: b.name ?? template?.name ?? null,
+    amount: b.amount ?? template?.amount ?? null,
+    defaultAccountId: b.defaultAccountId ?? template?.defaultAccountId ?? null,
+  }))
   res.json(budgets)
 })
 
 // GET /api/budgets/:id
 budgetsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
-  const budget = await db.budget.findFirst({
+  const raw = await db.budget.findFirst({
     where: { id, plan: { ownerId: req.user!.sub } },
-    include: { transactions: true },
+    include: {
+      template: { select: { name: true, amount: true, defaultAccountId: true } },
+      transactions: true,
+    },
   })
-  if (!budget) { res.status(404).json({ error: 'Not found' }); return }
-  res.json(budget)
+  if (!raw) { res.status(404).json({ error: 'Not found' }); return }
+  const { template, ...budget } = raw
+  res.json({
+    ...budget,
+    name: budget.name ?? template?.name ?? null,
+    amount: budget.amount ?? template?.amount ?? null,
+    defaultAccountId: budget.defaultAccountId ?? template?.defaultAccountId ?? null,
+  })
 })
 
 // POST /api/budgets

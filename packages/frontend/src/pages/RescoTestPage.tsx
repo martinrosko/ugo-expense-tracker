@@ -171,8 +171,8 @@ export default function RescoTestPage() {
         await apiClient.post('/api/plans', {
           id: p.id,
           name: p.name,
-          startDate: p.rw_startdate ?? null,
-          endDate: p.rw_enddate ?? null,
+          startDate: p.rw_startdate?.slice(0, 10) ?? null,
+          endDate: p.rw_enddate ?? null, // Resco endDate is exclusive midnight local time — UTC shift gives correct inclusive date
           intervalType: intervalMap[p.rw_intervaltype ?? PlanIntervalType.OneTime] ?? 'ONE_TIME',
           isTemplate: p.rw_istemplate ?? false,
           templateId: resolvedTemplateId,
@@ -324,8 +324,8 @@ export default function RescoTestPage() {
           name: t.name ?? null,
           amount: t.rw_amount ?? null,
           plannedAmount: t.rw_plannedamount ?? null,
-          plannedOn: t.rw_plannedon ?? null,
-          executedOn: t.rw_executedon ?? null,
+          plannedOn: t.rw_plannedon?.slice(0, 10) ?? null,
+          executedOn: t.rw_executedon?.slice(0, 10) ?? null,
           dueDateConfig: t.rw_duedateconfig ?? null,
           type: typeMap[t.rw_type ?? TransactionType.Transaction] ?? 'TRANSACTION',
           planId,

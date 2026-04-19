@@ -5,6 +5,7 @@ import RequireAuth from './components/RequireAuth'
 import UploadPage from './pages/UploadPage'
 import ReviewPage from './pages/ReviewPage'
 import RescoTestPage from './pages/RescoTestPage'
+import PlansOverviewPage from './pages/PlansOverviewPage'
 
 export default function App() {
   return (
@@ -14,7 +15,8 @@ export default function App() {
           <RequireAuth>
             <AppLayout>
               <Routes>
-                <Route path="/" element={<Navigate to="/upload" replace />} />
+                <Route path="/" element={<Navigate to="/plans" replace />} />
+                <Route path="/plans" element={<PlansOverviewPage />} />
                 <Route path="/upload" element={<UploadPage />} />
                 <Route path="/review" element={<ReviewPage />} />
                 <Route path="/resco-test" element={<RescoTestPage />} />

@@ -8,7 +8,7 @@ export default function RequireAuth({ children }: { children: ReactNode }) {
   if (isLoading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
-        <Spin size="large" tip="Checking authentication..." />
+        <Spin size="large" description="Checking authentication..." />
       </div>
     )
   }

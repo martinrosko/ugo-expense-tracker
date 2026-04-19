@@ -15,7 +15,7 @@ const ownerFilter = (ownerId: string) => ({
 // GET /api/transactions?budgetId=xxx&planId=xxx&unmatched=true
 transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const { budgetId, planId, unmatched } = req.query
-  const transactions = await db.transaction.findMany({
+  const raw = await db.transaction.findMany({
     where: {
       ...ownerFilter(req.user!.sub),
       ...(budgetId ? { budgetId: String(budgetId) } : {}),
@@ -23,23 +23,46 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
       ...(unmatched === 'true' ? { bankTicketId: null } : {}),
     },
     include: {
+      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true } },
       tags: { include: { tag: true } },
       bankTicket: true,
     },
     orderBy: { plannedOn: 'desc' },
   })
+  const transactions = raw.map(({ template, ...tx }) => ({
+    ...tx,
+    name: tx.name ?? template?.name ?? null,
+    plannedAmount: tx.plannedAmount ?? template?.plannedAmount ?? null,
+    plannedOn: tx.plannedOn ?? template?.plannedOn ?? null,
+    dueDateConfig: tx.dueDateConfig ?? template?.dueDateConfig ?? null,
+    fromAccountId: tx.fromAccountId ?? template?.fromAccountId ?? null,
+    toAccountId: tx.toAccountId ?? template?.toAccountId ?? null,
+  }))
   res.json(transactions)
 })
 
 // GET /api/transactions/:id
 transactionsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
-  const tx = await db.transaction.findFirst({
+  const raw = await db.transaction.findFirst({
     where: { id, ...ownerFilter(req.user!.sub) },
-    include: { tags: { include: { tag: true } }, bankTicket: true },
+    include: {
+      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true } },
+      tags: { include: { tag: true } },
+      bankTicket: true,
+    },
   })
-  if (!tx) { res.status(404).json({ error: 'Not found' }); return }
-  res.json(tx)
+  if (!raw) { res.status(404).json({ error: 'Not found' }); return }
+  const { template, ...tx } = raw
+  res.json({
+    ...tx,
+    name: tx.name ?? template?.name ?? null,
+    plannedAmount: tx.plannedAmount ?? template?.plannedAmount ?? null,
+    plannedOn: tx.plannedOn ?? template?.plannedOn ?? null,
+    dueDateConfig: tx.dueDateConfig ?? template?.dueDateConfig ?? null,
+    fromAccountId: tx.fromAccountId ?? template?.fromAccountId ?? null,
+    toAccountId: tx.toAccountId ?? template?.toAccountId ?? null,
+  })
 })
 
 // POST /api/transactions
