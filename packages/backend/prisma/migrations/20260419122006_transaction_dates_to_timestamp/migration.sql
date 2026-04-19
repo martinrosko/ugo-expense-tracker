@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "BankTicket" ALTER COLUMN "executedOn" SET DATA TYPE TIMESTAMP(3);
+
+-- AlterTable
+ALTER TABLE "Transaction" ALTER COLUMN "plannedOn" SET DATA TYPE TIMESTAMP(3),
+ALTER COLUMN "executedOn" SET DATA TYPE TIMESTAMP(3);

@@ -50,7 +50,7 @@ export default function UploadPage() {
         const accounts = await fetchUserAccounts()
         setUserAccounts(accounts)
         const def = accounts.find((a) => a.rw_isdefault)
-        if (def) setSelectedAccountId(def.rw_accountid)
+        if (def) setSelectedAccountId(def.id)
       }
     } catch {
       message.error('Failed to parse CSV. Check the file format.')
@@ -64,9 +64,9 @@ export default function UploadPage() {
     try {
       // 1. Fetch active plans and their budgets
       const plans = await fetchActivePlans()
-      const planIds = plans.map((p) => p.rw_planid)
+      const planIds = plans.map((p) => p.id)
       const budgets = await fetchBudgets(planIds)
-      const budgetIds = budgets.map((b) => b.rw_budgetid)
+      const budgetIds = budgets.map((b) => b.id)
 
       // 2. Fetch unmatched planned transactions + reference data
       const [transactions, partners, tags] = await Promise.all([
@@ -116,7 +116,7 @@ export default function UploadPage() {
                 style={{ width: 280 }}
                 value={selectedAccountId}
                 onChange={setSelectedAccountId}
-                options={userAccounts.map((a) => ({ value: a.rw_accountid, label: a.name }))}
+                options={userAccounts.map((a) => ({ value: a.id, label: a.name }))}
               />
             </div>
           )}

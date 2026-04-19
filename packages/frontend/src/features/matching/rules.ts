@@ -83,7 +83,7 @@ export function suggestBudget(
   const partner = findPartner(row.partnername, partners)
   if (partner) {
     const match = budgets.find(
-      (b) => b._rw_defaultaccountid_value === partner.rw_accountid,
+      (b) => b.__rw_defaultaccountid_id === partner.id,
     )
     if (match) return match
   }

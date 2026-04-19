@@ -38,6 +38,8 @@ model Account {
   type           AccountType
   initialBalance Decimal     @default(0) @db.Decimal(18, 4)
   isDefault      Boolean     @default(false)
+  stateCode      Int         @default(0) /// 0 = Active, 1 = Inactive
+  statusCode     Int         @default(0)
   owner          User        @relation(fields: [ownerId], references: [id])
   ownerId        String
 
@@ -45,6 +47,7 @@ model Account {
   fromTransactions  Transaction[] @relation("TxFromAccount")
   toTransactions    Transaction[] @relation("TxToAccount")
   defaultForBudgets Budget[]      @relation("BudgetDefaultAccount")
+  defaultForPlans   Plan[]        @relation("PlanDefaultAccount")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -60,20 +63,26 @@ enum AccountType {
 // ─── Plans & Budgets ──────────────────────────────────────────────────────────
 
 model Plan {
-  id           String           @id @default(uuid())
-  name         String
-  startDate    DateTime         @db.Date
-  endDate      DateTime         @db.Date
-  intervalType PlanIntervalType
-  isTemplate   Boolean          @default(false)
-  template     Plan?            @relation("PlanFromTemplate", fields: [templateId], references: [id])
-  templateId   String?
-  instances    Plan[]           @relation("PlanFromTemplate")
-  owner        User             @relation(fields: [ownerId], references: [id])
-  ownerId      String
-  budgets      Budget[]
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  id                String           @id @default(uuid())
+  name              String?
+  startDate         DateTime?        @db.Date
+  endDate           DateTime?        @db.Date
+  intervalType      PlanIntervalType
+  recurrenceConfig  String?          /// JSON string from rw_recurrenceconfig
+  isTemplate        Boolean          @default(false)
+  stateCode         Int              @default(0) /// 0 = Active, 1 = Inactive
+  statusCode        Int              @default(0) /// 0=Draft 1=Active 2=Scheduled 3=Completed 4=Cancelled
+  template          Plan?            @relation("PlanFromTemplate", fields: [templateId], references: [id])
+  templateId        String?
+  instances         Plan[]           @relation("PlanFromTemplate")
+  defaultAccount    Account?         @relation("PlanDefaultAccount", fields: [defaultAccountId], references: [id])
+  defaultAccountId  String?
+  owner             User             @relation(fields: [ownerId], references: [id])
+  ownerId           String
+  budgets           Budget[]
+  transactions      Transaction[]
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
 }
 
 enum PlanIntervalType {
@@ -85,8 +94,10 @@ enum PlanIntervalType {
 
 model Budget {
   id               String   @id @default(uuid())
-  name             String
+  name             String?
   amount           Decimal? @db.Decimal(18, 4)
+  stateCode        Int      @default(0)
+  statusCode       Int      @default(0)
   plan             Plan     @relation(fields: [planId], references: [id])
   planId           String
   defaultAccount   Account? @relation("BudgetDefaultAccount", fields: [defaultAccountId], references: [id])
@@ -105,13 +116,15 @@ model BankTicket {
   id                   String   @id @default(uuid())
   name                 String?
   amount               Decimal  @db.Decimal(18, 4)
-  executedOn           DateTime @db.Date
+  executedOn           DateTime
   partnerName          String?
   partnerAccountNumber String?
   reference            String?
   variableSymbol       String?
   constantSymbol       String?
   specificSymbol       String?
+  stateCode            Int      @default(0)
+  statusCode           Int      @default(0)
   /// Bank-assigned transaction ID — used for deduplication
   ticketId             String?
   account              Account  @relation(fields: [accountId], references: [id])
@@ -128,28 +141,36 @@ model BankTicket {
 
 model Transaction {
   id            String          @id @default(uuid())
-  name          String
+  name          String?
   amount        Decimal?        @db.Decimal(18, 4)
   plannedAmount Decimal?        @db.Decimal(18, 4)
-  plannedOn     DateTime?       @db.Date
-  executedOn    DateTime?       @db.Date
+  plannedOn     DateTime?
+  executedOn    DateTime?
+  dueDateConfig String?
   type          TransactionType
+  stateCode     Int             @default(0)
+  statusCode    Int             @default(0)
   bankTicket    BankTicket?     @relation(fields: [bankTicketId], references: [id])
   bankTicketId  String?         @unique
-  budget        Budget          @relation(fields: [budgetId], references: [id])
-  budgetId      String
+  budget        Budget?         @relation(fields: [budgetId], references: [id])
+  budgetId      String?
+  plan          Plan?           @relation(fields: [planId], references: [id])
+  planId        String?
   fromAccount   Account?        @relation("TxFromAccount", fields: [fromAccountId], references: [id])
   fromAccountId String?
   toAccount     Account?        @relation("TxToAccount", fields: [toAccountId], references: [id])
   toAccountId   String?
+  template      Transaction?    @relation("TxFromTemplate", fields: [templateId], references: [id])
+  templateId    String?
+  instances     Transaction[]   @relation("TxFromTemplate")
   tags          TransactionTag[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 }
 
 enum TransactionType {
-  EXPENSE
-  INCOME
+  TRANSACTION
+  BALANCE
 }
 
 // ─── Tags ─────────────────────────────────────────────────────────────────────
@@ -158,6 +179,8 @@ model Tag {
   id           String           @id @default(uuid())
   name         String
   color        String?
+  stateCode    Int              @default(0)
+  statusCode   Int              @default(0)
   owner        User             @relation(fields: [ownerId], references: [id])
   ownerId      String
   transactions TransactionTag[]

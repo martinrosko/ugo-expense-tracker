@@ -1,0 +1,24 @@
+-- AlterTable
+ALTER TABLE "Account" ADD COLUMN     "stateCode" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "statusCode" INTEGER NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "BankTicket" ADD COLUMN     "stateCode" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "statusCode" INTEGER NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "Budget" ADD COLUMN     "stateCode" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "statusCode" INTEGER NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "Plan" ADD COLUMN     "recurrenceConfig" TEXT,
+ADD COLUMN     "stateCode" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "statusCode" INTEGER NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "Tag" ADD COLUMN     "stateCode" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "statusCode" INTEGER NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "Transaction" ADD COLUMN     "stateCode" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "statusCode" INTEGER NOT NULL DEFAULT 0;

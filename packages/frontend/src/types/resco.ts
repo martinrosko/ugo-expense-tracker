@@ -1,16 +1,16 @@
 // ─── Picklist constants ───────────────────────────────────────────────────────
 
 export const AccountType = {
-  Cash: 1,
-  Bank: 2,
+  Bank: 1,
+  Cash: 2,
   Investment: 3,
   PaymentPartner: 100,
 } as const
 export type AccountType = (typeof AccountType)[keyof typeof AccountType]
 
 export const TransactionType = {
-  Expense: 1,
-  Income: 2,
+  Transaction: 1,
+  Balance: 2,
 } as const
 export type TransactionType = (typeof TransactionType)[keyof typeof TransactionType]
 
@@ -56,10 +56,11 @@ export interface RwBankTicket {
 /** A planned or realized expense/income entry within a plan or budget. */
 export interface RwTransaction {
   id: string
-  name: string
+  name?: string
   rw_amount?: number
   /** Null means this transaction has not been matched to a real bank operation yet. */
   __rw_bankticketid_id?: string | null
+  rw_duedateconfig?: string
   rw_executedon?: string
   __rw_fromaccountid_id?: string
   /** GUID of the parent rw_plan or rw_budget. */
@@ -67,6 +68,7 @@ export interface RwTransaction {
   rw_plannedamount?: number
   rw_plannedon?: string
   rw_ticketid?: string
+  __rw_templateid_id?: string
   __rw_toaccountid_id?: string
   rw_type?: TransactionType
   statecode?: number
