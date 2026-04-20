@@ -6,6 +6,9 @@ import UploadPage from './pages/UploadPage'
 import ReviewPage from './pages/ReviewPage'
 import RescoTestPage from './pages/RescoTestPage'
 import PlansOverviewPage from './pages/PlansOverviewPage'
+import TransactionsPage from './pages/TransactionsPage'
+import PartnerBalancePage from './pages/PartnerBalancePage'
+import BudgetChartPage from './pages/BudgetChartPage'
 
 export default function App() {
   return (
@@ -17,6 +20,9 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Navigate to="/plans" replace />} />
                 <Route path="/plans" element={<PlansOverviewPage />} />
+                <Route path="/transactions" element={<TransactionsPage />} />
+                <Route path="/partners" element={<PartnerBalancePage />} />
+                <Route path="/budget-chart" element={<BudgetChartPage />} />
                 <Route path="/upload" element={<UploadPage />} />
                 <Route path="/review" element={<ReviewPage />} />
                 <Route path="/resco-test" element={<RescoTestPage />} />

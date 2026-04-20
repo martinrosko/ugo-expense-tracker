@@ -1,6 +1,6 @@
 import React from 'react'
 import { Layout, Menu, Typography } from 'antd'
-import { UploadOutlined, CheckSquareOutlined, ApiOutlined, BarChartOutlined } from '@ant-design/icons'
+import { UploadOutlined, CheckSquareOutlined, ApiOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 
 const { Header, Sider, Content } = Layout
@@ -11,6 +11,9 @@ interface AppLayoutProps {
 
 const NAV_ITEMS = [
   { key: '/plans', label: 'Plans Overview', icon: <BarChartOutlined /> },
+  { key: '/transactions', label: 'Transactions', icon: <UnorderedListOutlined /> },
+  { key: '/partners', label: 'Partner Balance', icon: <TeamOutlined /> },
+  { key: '/budget-chart', label: 'Budget Chart', icon: <FundOutlined /> },
   { key: '/upload', label: 'Upload CSV', icon: <UploadOutlined /> },
   { key: '/review', label: 'Review & Submit', icon: <CheckSquareOutlined /> },
   { key: '/resco-test', label: 'Resco Test', icon: <ApiOutlined /> },

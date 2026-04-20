@@ -12,22 +12,31 @@ const ownerFilter = (ownerId: string) => ({
   ],
 })
 
-// GET /api/transactions?budgetId=xxx&planId=xxx&unmatched=true
+// GET /api/transactions?budgetId=xxx&planId=xxx&unmatched=true&from=YYYY-MM-DD&to=YYYY-MM-DD&executed=true
 transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
-  const { budgetId, planId, unmatched } = req.query
+  const { budgetId, planId, unmatched, from, to, executed, accountId } = req.query
+  const fromDate = from ? new Date(String(from).slice(0, 10)) : null
+  const toDate = to ? new Date(String(to).slice(0, 10) + 'T23:59:59') : null
   const raw = await db.transaction.findMany({
     where: {
       ...ownerFilter(req.user!.sub),
       ...(budgetId ? { budgetId: String(budgetId) } : {}),
-      ...(planId ? { planId: String(planId) } : {}),
+      ...(planId ? { OR: [{ planId: String(planId) }, { budget: { planId: String(planId) } }] } : {}),
+      ...(accountId ? { AND: [{ OR: [{ fromAccountId: String(accountId) }, { toAccountId: String(accountId) }] }] } : {}),
       ...(unmatched === 'true' ? { bankTicketId: null } : {}),
+      ...(executed === 'true' ? { executedOn: { not: null } } : {}),
+      ...(fromDate && toDate ? { executedOn: { gte: fromDate, lte: toDate } } : {}),
     },
     include: {
       template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true } },
       tags: { include: { tag: true } },
       bankTicket: true,
+      fromAccount: { select: { id: true, name: true, type: true } },
+      toAccount: { select: { id: true, name: true, type: true } },
+      plan: { select: { id: true, name: true } },
+      budget: { select: { id: true, name: true } },
     },
-    orderBy: { plannedOn: 'desc' },
+    orderBy: { executedOn: 'desc' },
   })
   const transactions = raw.map(({ template, ...tx }) => ({
     ...tx,

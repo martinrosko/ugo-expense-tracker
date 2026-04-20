@@ -6,7 +6,7 @@ export const plansRouter = Router()
 
 // GET /api/plans?from=ISO&to=ISO&detailed=true
 plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
-  const { from, to, detailed } = req.query
+  const { from, to, detailed, status } = req.query
   const ownerId = req.user!.sub
 
   // For @db.Date columns, use date-only strings to avoid timestamp/timezone mismatches
@@ -24,9 +24,11 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
       }
     : {}
 
+  const statusWhere = status !== undefined ? { statusCode: parseInt(String(status), 10) } : {}
+
   if (detailed === 'true') {
     const plans = await db.plan.findMany({
-      where: { ownerId, ...dateWhere },
+      where: { ownerId, ...dateWhere, ...statusWhere },
       include: {
         template: { select: { name: true, defaultAccountId: true } },
         budgets: {
@@ -34,10 +36,10 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
             template: { select: { name: true, amount: true } },
             transactions: {
               select: {
-                id: true, name: true, amount: true, plannedAmount: true, executedOn: true, type: true,
+                id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true,
                 fromAccount: { select: { type: true } },
                 toAccount: { select: { type: true } },
-                template: { select: { name: true, plannedAmount: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
+                template: { select: { name: true, plannedAmount: true, dueDateConfig: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
               },
             },
           },
@@ -46,10 +48,10 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
         transactions: {
           where: { budgetId: null },
           select: {
-            id: true, name: true, amount: true, plannedAmount: true, executedOn: true, type: true,
+            id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true,
             fromAccount: { select: { type: true } },
             toAccount: { select: { type: true } },
-            template: { select: { name: true, plannedAmount: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
+            template: { select: { name: true, plannedAmount: true, dueDateConfig: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
           },
         },
       },
@@ -69,6 +71,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
           ...tx,
           name: tx.name ?? txTpl?.name ?? null,
           plannedAmount: tx.plannedAmount ?? txTpl?.plannedAmount ?? null,
+          dueDateConfig: tx.dueDateConfig ?? txTpl?.dueDateConfig ?? null,
           fromAccount: tx.fromAccount ?? txTpl?.fromAccount ?? null,
           toAccount: tx.toAccount ?? txTpl?.toAccount ?? null,
         })),
@@ -77,6 +80,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
         ...tx,
         name: tx.name ?? txTpl?.name ?? null,
         plannedAmount: tx.plannedAmount ?? txTpl?.plannedAmount ?? null,
+        dueDateConfig: tx.dueDateConfig ?? txTpl?.dueDateConfig ?? null,
         fromAccount: tx.fromAccount ?? txTpl?.fromAccount ?? null,
         toAccount: tx.toAccount ?? txTpl?.toAccount ?? null,
       })),
@@ -87,7 +91,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
   }
 
   const rawPlans = await db.plan.findMany({
-    where: { ownerId, ...dateWhere },
+    where: { ownerId, ...dateWhere, ...statusWhere },
     include: {
       template: { select: { name: true, defaultAccountId: true } },
       budgets: true,
