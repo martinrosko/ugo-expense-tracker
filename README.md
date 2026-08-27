@@ -177,6 +177,20 @@ UgoBackend/
 | Open Prisma Studio | `cd packages/backend && npx prisma studio` |
 | Rebuild Docker images | `npm run docker:build` |
 
+# DB access
+# GUI browser (opens in browser at localhost:5555)
+npm run db:studio -w packages/backend
+
+Or connect with any Postgres client (DBeaver, TablePlus, psql):
+host: localhost  port: 5432  db: ugo  user: ugo  pass: ugo_dev
+
+# Service	URL	Notes
+| Frontend | http://localhost:5173 | Vite dev server |
+| Backend | http://localhost:3000 | Express (native, not Docker) | 
+| Node debugger | localhost:9229 | VS Code attaches here | 
+| PostgreSQL | localhost:5432 | Docker | 
+| Keycloak | http://localhost:8080 | Docker | 
+
 ## Implementation Phases
 
 | Phase | Description | Status |

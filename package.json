@@ -12,6 +12,7 @@
     "backend:dev:debug": "npm run dev:debug -w packages/backend",
     "backend:build": "npm run build -w packages/backend",
     "docker:up": "docker compose up -d",
+    "docker:up:dev": "docker compose up -d postgres keycloak",
     "docker:down": "docker compose down",
     "docker:build": "docker compose build"
   }

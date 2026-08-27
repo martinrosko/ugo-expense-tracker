@@ -109,9 +109,27 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
 // GET /api/plans/:id
 plansRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
+  const txSelect = {
+    id: true, name: true, plannedAmount: true, fromAccountId: true, toAccountId: true,
+    planId: true, budgetId: true, type: true, stateCode: true, statusCode: true, templateId: true,
+    dueDateConfig: true,
+    template: { select: { name: true, plannedAmount: true, fromAccountId: true, toAccountId: true, dueDateConfig: true } },
+    fromAccount: { select: { id: true, name: true, type: true } },
+    toAccount: { select: { id: true, name: true, type: true } },
+  }
   const plan = await db.plan.findFirst({
     where: { id, ownerId: req.user!.sub },
-    include: { budgets: true },
+    include: {
+      template: { select: { id: true, name: true, defaultAccountId: true } },
+      budgets: {
+        include: {
+          template: { select: { id: true, name: true, amount: true, defaultAccountId: true } },
+          transactions: { select: txSelect, orderBy: { plannedAmount: 'desc' } },
+        },
+        orderBy: { name: 'asc' },
+      },
+      transactions: { where: { budgetId: null }, select: txSelect, orderBy: { plannedAmount: 'desc' } },
+    },
   })
   if (!plan) { res.status(404).json({ error: 'Not found' }); return }
   res.json(plan)

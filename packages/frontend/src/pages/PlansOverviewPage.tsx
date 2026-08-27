@@ -17,11 +17,12 @@ import {
   Tooltip,
   Switch,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '../api/apiClient'
+import { computePlannedOn } from '../features/helpers'
 
 dayjs.extend(isoWeek)
 
@@ -65,7 +66,7 @@ type PlanDetailed = {
 
 // ─── Period helpers ───────────────────────────────────────────────────────────
 
-type PeriodMode = 'active' | 'week' | 'month' | 'year'
+type PeriodMode = 'active' | 'week' | 'month' | 'year' | 'templates'
 
 function getISOWeek(date: Date): number {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
@@ -163,57 +164,16 @@ function signedAmount(tx: TxSummary, raw: string | null): number {
 
 /** Returns true if the transaction falls within [from, to] based on executedOn or plannedOn */
 function inPeriod(tx: TxSummary, from: Date, to: Date, planStartDate?: string | null): boolean {
-  const dateStr = tx.executedOn ?? tx.plannedOn ?? computePlannedOn(tx.dueDateConfig, planStartDate)
+  const dateStr = tx.executedOn ?? tx.plannedOn ?? computePlannedOnLabel(tx.dueDateConfig, planStartDate)
   if (!dateStr) return true // no date — include (floating/unscheduled)
   const d = new Date(dateStr)
   return d >= from && d <= to
 }
 
-/** Compute the planned date for a transaction from its dueDateConfig and the plan's startDate */
-function computePlannedOn(dueDateConfig: string | null | undefined, planStartDate: string | null | undefined): string | null {
-  if (!dueDateConfig || !planStartDate) return null
-  let cfg: {
-    month?: number; day?: number; week?: number; weekDay?: number;
-    date?: string; backwards?: boolean
-  }
-  try { cfg = JSON.parse(dueDateConfig) } catch { return null }
-  if (!cfg) return null
-
-  if (cfg.date) return cfg.date
-
-  // Start from plan start date
-  const d = new Date(planStartDate)
-  if (isNaN(d.getTime())) return null
-
-  if (cfg.month) {
-    d.setMonth(d.getMonth() + cfg.month)
-  }
-
-  if (cfg.day !== undefined) {
-    const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
-    let day = cfg.day
-    if (day > daysInMonth) day = daysInMonth
-    if (!cfg.backwards) {
-      d.setDate(d.getDate() + day - 1)
-    } else {
-      // Go to start of next month, subtract day days
-      d.setMonth(d.getMonth() + 1, 1)
-      d.setDate(d.getDate() - day)
-    }
-  } else if (cfg.weekDay !== undefined) {
-    // weekDay is a bitmask power-of-2: Monday=1, Tuesday=2, Wednesday=4 ...
-    const targetDow = Math.round(Math.log2(cfg.weekDay)) // 0=Mon ... 6=Sun
-    const firstDow = (d.getDay() + 6) % 7 // convert Sun=0 to Mon=0 system
-    let offset = targetDow >= firstDow ? targetDow - firstDow : 7 - (firstDow - targetDow)
-    if (cfg.week && cfg.week > 1) {
-      offset += 7 * (cfg.week - 1)
-      const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
-      if (d.getDate() + offset >= daysInMonth) offset -= 7
-    }
-    d.setDate(d.getDate() + offset)
-  }
-
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+function computePlannedOnLabel(dueDateConfig: string | null | undefined, planStartDate: string | null | undefined): string | null {
+  const d = computePlannedOn(dueDateConfig, planStartDate);
+  if (!d) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function parse(v: string | null | undefined): number {
@@ -577,6 +537,12 @@ function PlanHeader({ plan, stats, splitView }: { plan: PlanDetailed; stats: Bud
           )}
         </div>
         <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
+        <Tooltip title="Edit plan">
+          <Button
+            size="small" type="text" icon={<EditOutlined />}
+            onClick={(e) => { e.stopPropagation(); navigate(`/plans/${plan.id}/edit`) }}
+          />
+        </Tooltip>
         <Tooltip title="View transactions">
           <Button
             size="small" type="text" icon={<UnorderedListOutlined />}
@@ -658,6 +624,7 @@ function PlanHeader({ plan, stats, splitView }: { plan: PlanDetailed; stats: Bud
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function PlansOverviewPage() {
+  const navigate = useNavigate()
   const [mode, setMode] = useState<PeriodMode>('active')
   const [offset, setOffset] = useState(0)
   const [plans, setPlans] = useState<PlanDetailed[]>([])
@@ -666,7 +633,7 @@ export default function PlansOverviewPage() {
   const [error, setError] = useState<string | null>(null)
 
   const period = useMemo(
-    () => mode !== 'active' ? getPeriod(mode, offset) : null,
+    () => mode !== 'active' && mode !== 'templates' ? getPeriod(mode, offset) : null,
     [mode, offset]
   )
 
@@ -680,7 +647,9 @@ export default function PlansOverviewPage() {
     setLoading(true)
     setError(null)
     const params: Record<string, string> = { detailed: 'true' }
-    if (mode === 'active') {
+    if (mode === 'templates') {
+      // no date filtering — fetch all and keep templates
+    } else if (mode === 'active') {
       const today = toLocalDateStr(new Date())
       params.from = today
       params.to = today
@@ -691,7 +660,13 @@ export default function PlansOverviewPage() {
     apiClient
       .get<PlanDetailed[]>('/api/plans', { params })
       .then((res) => {
-        if (!cancelled) setPlans(res.data.filter((p) => !p.isTemplate))
+        if (!cancelled) {
+          if (mode === 'templates') {
+            setPlans(res.data.filter((p) => p.isTemplate))
+          } else {
+            setPlans(res.data.filter((p) => !p.isTemplate))
+          }
+        }
       })
       .catch((err) => {
         if (!cancelled) {
@@ -705,7 +680,7 @@ export default function PlansOverviewPage() {
 
   // Groups for period view
   const groupedByStatus = useMemo(() => {
-    if (mode === 'active') return null
+    if (mode === 'active' || mode === 'templates') return null
     return STATUS_GROUPS
       .map((g) => ({ ...g, plans: plans.filter((p) => g.codes.includes(p.statusCode)) }))
       .filter((g) => g.plans.length > 0)
@@ -743,9 +718,10 @@ export default function PlansOverviewPage() {
             <Radio.Button value="week">Week</Radio.Button>
             <Radio.Button value="month">Month</Radio.Button>
             <Radio.Button value="year">Year</Radio.Button>
+            <Radio.Button value="templates">Templates</Radio.Button>
           </Radio.Group>
         </Col>
-        {mode !== 'active' && period && (
+        {mode !== 'active' && mode !== 'templates' && period && (
           <Col>
             <Space>
               <Button icon={<LeftOutlined />} onClick={() => setOffset((o) => o - 1)} />
@@ -760,7 +736,7 @@ export default function PlansOverviewPage() {
                     ? 'MMMM YYYY'
                     : 'YYYY'
                 }
-                onChange={(d) => { if (d) setOffset(computeOffset(mode, d)) }}
+                onChange={(d) => { if (d) setOffset(computeOffset(mode as Exclude<PeriodMode, 'active' | 'templates'>, d)) }}
                 style={{ width: 200, textAlign: 'center', fontWeight: 600, fontSize: 16 }}
                 variant="borderless"
               />
@@ -786,7 +762,37 @@ export default function PlansOverviewPage() {
 
       {!loading && !error && (
         <>
-          {mode === 'active' ? (
+          {mode === 'templates' ? (
+            plans.length > 0
+              ? <Collapse
+                  items={plans.map((plan) => ({
+                    key: plan.id,
+                    label: (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Text strong style={{ flex: 1 }}>{plan.name ?? '(unnamed)'}</Text>
+                        <Tag color="purple">{plan.intervalType}</Tag>
+                        <Tooltip title="Edit template">
+                          <Button
+                            size="small" type="text" icon={<EditOutlined />}
+                            onClick={(e) => { e.stopPropagation(); navigate(`/plans/${plan.id}/edit`) }}
+                          />
+                        </Tooltip>
+                      </div>
+                    ),
+                    children: (
+                      <BudgetTable
+                        budgets={plan.budgets ?? []}
+                        directTxs={plan.transactions ?? []}
+                        scheduled
+                        planId={plan.id}
+                        planName={plan.name}
+                        splitView={splitView}
+                      />
+                    ),
+                  }))}
+                />
+              : <Text type="secondary">No plan templates found.</Text>
+          ) : mode === 'active' ? (
             plans.length > 0
               ? <Collapse items={collapseItems(plans)} defaultActiveKey={activeDefaultKeys} />
               : <Text type="secondary">No active plans found.</Text>
@@ -802,7 +808,7 @@ export default function PlansOverviewPage() {
           )}
 
           {/* Period summary (period views only) */}
-          {mode !== 'active' && plans.length > 0 && (() => {
+          {mode !== 'active' && mode !== 'templates' && plans.length > 0 && (() => {
             const all = plans.map((p) => planStats(p, period?.from, period?.to))
             const totalPlanned = all.reduce((s, p) => s + p.planned, 0)
             const totalActual = all.reduce((s, p) => s + p.actual, 0)
