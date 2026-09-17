@@ -760,7 +760,7 @@ export default function PlansOverviewPage() {
             plans.length > 0
                 ? <Collapse
                   items={plans.map((plan) => {
-                    const planned = planStats(plan).planned
+                    const stats = planStats(plan)
                     return {
                       key: plan.id,
                       label: (
@@ -780,10 +780,25 @@ export default function PlansOverviewPage() {
                               />
                             </Tooltip>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 12 }}>
-                            <Text style={{ fontSize: 12, color: amountColor(planned) }}>{fmt(planned)}</Text>
-                            <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
-                          </div>
+                          {splitView ? (
+                            <div style={{ marginTop: 4 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                <Text style={{ fontSize: 12, color: '#3f8600', minWidth: 10 }}>↑</Text>
+                                <Text style={{ fontSize: 12, color: '#3f8600' }}>{fmt(stats.incPlanned)}</Text>
+                                <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                <Text style={{ fontSize: 12, color: '#cf1322', minWidth: 10 }}>↓</Text>
+                                <Text style={{ fontSize: 12, color: '#cf1322' }}>{fmt(-stats.expPlanned)}</Text>
+                                <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 12 }}>
+                              <Text style={{ fontSize: 12, color: amountColor(stats.planned) }}>{fmt(stats.planned)}</Text>
+                              <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
+                            </div>
+                          )}
                         </div>
                       ),
                       children: (
