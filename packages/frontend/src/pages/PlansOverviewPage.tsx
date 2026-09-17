@@ -20,7 +20,7 @@ import {
 import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import apiClient from '../api/apiClient'
 import { computePlannedOn } from '../features/helpers'
 
@@ -67,6 +67,13 @@ type PlanDetailed = {
 // ─── Period helpers ───────────────────────────────────────────────────────────
 
 type PeriodMode = 'active' | 'week' | 'month' | 'year' | 'templates'
+
+type PlansOverviewState = {
+  mode?: PeriodMode
+  offset?: number
+  splitView?: boolean
+  expandedTemplateIds?: string[]
+}
 
 function getISOWeek(date: Date): number {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
@@ -392,7 +399,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     const dPlnS = splitByKind(filteredDirect, 'plannedAmount')
     const dResS = splitByKind(filteredDirect, 'plannedAmount', { unexecutedOnly: true })
     const ep = execProgress({ planned, actual, reserved })
-    rows.push({ key: '__direct__', name: 'Uncategorized', planned, actual, reserved, incPlanned: dPlnS.inc, incActual: dActS.inc, incReserved: dResS.inc, expPlanned: dPlnS.exp, expActual: dActS.exp, expReserved: dResS.exp, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped })
+    rows.push({ key: '__direct__', name: 'General', planned, actual, reserved, incPlanned: dPlnS.inc, incActual: dActS.inc, incReserved: dResS.inc, expPlanned: dPlnS.exp, expActual: dActS.exp, expReserved: dResS.exp, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped })
   }
 
   // totals row
@@ -407,7 +414,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
   const totalExpReserved = rows.reduce((s, r) => s + r.expReserved, 0)
 
   return (
-    <div style={{ padding: '0 4px' }}>
+    <div style={{ padding: '0 0px' }}>
       <Table<BudgetRow>
         dataSource={rows}
         pagination={false}
@@ -416,15 +423,15 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
         summary={() => (
           <Table.Summary.Row style={{ fontWeight: 600 }}>
             <Table.Summary.Cell index={0}>Total</Table.Summary.Cell>
-            <Table.Summary.Cell index={1}>
+            <Table.Summary.Cell index={1} align="right">
               {splitView ? <SplitAmount inc={totalIncPlanned} exp={totalExpPlanned} /> : <span style={{ color: amountColor(totalPlanned) }}>{fmt(totalPlanned)}</span>}
             </Table.Summary.Cell>
             {!scheduled && (
               <>
-                <Table.Summary.Cell index={2}>
+                <Table.Summary.Cell index={2} align="right">
                   {splitView ? <SplitAmount inc={totalIncActual} exp={totalExpActual} /> : <span style={{ color: amountColor(totalActual) }}>{fmt(totalActual)}</span>}
                 </Table.Summary.Cell>
-                <Table.Summary.Cell index={3}>
+                <Table.Summary.Cell index={3} align="right">
                   {splitView ? <SplitAmount inc={totalIncReserved} exp={totalExpReserved} /> : <span style={{ color: amountColor(totalReserved) }}>{fmt(totalReserved)}</span>}
                 </Table.Summary.Cell>
               </>
@@ -433,7 +440,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
           </Table.Summary.Row>
         )}
         columns={[
-          { title: 'Budget', dataIndex: 'name', key: 'name', ellipsis: true },
+          { title: 'Name', dataIndex: 'name', key: 'name', ellipsis: true },
           {
             title: 'Planned',
             dataIndex: 'planned',
@@ -466,22 +473,6 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
                 : <span style={{ color: amountColor(row.reserved) }}>{fmt(row.reserved)}</span>,
             },
           ] : []),
-          {
-            title: 'Execution',
-            key: 'exec',
-            width: 150,
-            render: (_: unknown, row: BudgetRow) => (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ flex: 1 }}>
-                  <Progress percent={row.pct} size="small" status={row.status} showInfo={false} />
-                </div>
-                {row.flipped
-                  ? <span style={{ fontSize: 12, minWidth: 36, textAlign: 'right', color: '#3f8600' }}>↑ {fmt(row.actual)}</span>
-                  : <span style={{ fontSize: 12, minWidth: 36, textAlign: 'right' }}>{row.rawPct}%</span>
-                }
-              </div>
-            ),
-          },
           {
             title: '',
             key: 'actions',
@@ -625,10 +616,13 @@ function PlanHeader({ plan, stats, splitView }: { plan: PlanDetailed; stats: Bud
 
 export default function PlansOverviewPage() {
   const navigate = useNavigate()
-  const [mode, setMode] = useState<PeriodMode>('active')
-  const [offset, setOffset] = useState(0)
+  const location = useLocation()
+  const returnState = location.state as PlansOverviewState | null
+  const [mode, setMode] = useState<PeriodMode>(returnState?.mode ?? 'active')
+  const [offset, setOffset] = useState(returnState?.offset ?? 0)
   const [plans, setPlans] = useState<PlanDetailed[]>([])
-  const [splitView, setSplitView] = useState(false)
+  const [splitView, setSplitView] = useState(returnState?.splitView ?? false)
+  const [expandedTemplateIds, setExpandedTemplateIds] = useState<string[]>(returnState?.expandedTemplateIds ?? [])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -764,44 +758,63 @@ export default function PlansOverviewPage() {
         <>
           {mode === 'templates' ? (
             plans.length > 0
-              ? <Collapse
-                  items={plans.map((plan) => ({
-                    key: plan.id,
-                    label: (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <Text strong style={{ flex: 1 }}>{plan.name ?? '(unnamed)'}</Text>
-                        <Tag color="purple">{plan.intervalType}</Tag>
-                        <Tooltip title="Edit template">
-                          <Button
-                            size="small" type="text" icon={<EditOutlined />}
-                            onClick={(e) => { e.stopPropagation(); navigate(`/plans/${plan.id}/edit`) }}
+                ? <Collapse
+                  items={plans.map((plan) => {
+                    const planned = planStats(plan).planned
+                    return {
+                      key: plan.id,
+                      label: (
+                        <div style={{ width: '100%' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Text strong style={{ flex: 1 }}>{plan.name ?? '(unnamed)'}</Text>
+                            <Tag color="purple">{plan.intervalType}</Tag>
+                            <Tooltip title="Edit template">
+                              <Button
+                                size="small" type="text" icon={<EditOutlined />}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  navigate(`/plans/${plan.id}/edit`, {
+                                    state: { returnState: { mode, offset, splitView, expandedTemplateIds } },
+                                  })
+                                }}
+                              />
+                            </Tooltip>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 12 }}>
+                            <Text style={{ fontSize: 12, color: amountColor(planned) }}>{fmt(planned)}</Text>
+                            <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
+                          </div>
+                        </div>
+                      ),
+                      children: (
+                        <div>
+                          <Title level={5} style={{ marginTop: 0, marginBottom: 8 }}>Budgets</Title>
+                          <BudgetTable
+                            budgets={plan.budgets ?? []}
+                            directTxs={plan.transactions ?? []}
+                            scheduled
+                            planId={plan.id}
+                            planName={plan.name}
+                            splitView={splitView}
                           />
-                        </Tooltip>
-                      </div>
-                    ),
-                    children: (
-                      <BudgetTable
-                        budgets={plan.budgets ?? []}
-                        directTxs={plan.transactions ?? []}
-                        scheduled
-                        planId={plan.id}
-                        planName={plan.name}
-                        splitView={splitView}
-                      />
-                    ),
-                  }))}
+                        </div>
+                      ),
+                    }
+                  })}
+                  activeKey={expandedTemplateIds}
+                  onChange={(keys) => setExpandedTemplateIds(typeof keys === 'string' ? [keys] : keys)}
                 />
               : <Text type="secondary">No plan templates found.</Text>
           ) : mode === 'active' ? (
             plans.length > 0
-              ? <Collapse items={collapseItems(plans)} defaultActiveKey={activeDefaultKeys} />
+              ? <Collapse styles={{ body: { padding: 0 } }} items={collapseItems(plans)} defaultActiveKey={activeDefaultKeys} />
               : <Text type="secondary">No active plans found.</Text>
           ) : (
             groupedByStatus && groupedByStatus.length > 0
               ? groupedByStatus.map((group) => (
                   <div key={group.key}>
                     <Title level={5} style={{ marginBottom: 8 }}>{group.label}</Title>
-                    <Collapse items={collapseItems(group.plans)} />
+                    <Collapse styles={{ body: { padding: 0 } }} items={collapseItems(group.plans)} />
                   </div>
                 ))
               : <Text type="secondary">No plans found for this period.</Text>

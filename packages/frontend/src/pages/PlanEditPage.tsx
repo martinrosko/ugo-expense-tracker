@@ -1,14 +1,15 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useLocation, useParams, useNavigate } from 'react-router-dom'
 import {
   Typography, Space, Button, Collapse, Table, Tag, Spin, Alert,
   Modal, Form, Input, InputNumber, Select, Popconfirm, message,
-  Divider, Tooltip, Radio,
+  Divider, Tooltip, Radio, DatePicker,
 } from 'antd'
 import {
   ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined,
   InfoCircleOutlined,
 } from '@ant-design/icons'
+import dayjs from 'dayjs'
 import apiClient from '../api/apiClient'
 
 const { Title, Text } = Typography
@@ -29,10 +30,12 @@ type TxTemplate = {
 type Transaction = {
   id: string
   name: string | null
+  amount: string | null
   plannedAmount: string | null
   fromAccountId: string | null
   toAccountId: string | null
   dueDateConfig: string | null
+  executedOn: string | null
   fromAccount: AccountRef | null
   toAccount: AccountRef | null
   planId: string | null
@@ -67,6 +70,13 @@ type Plan = {
   transactions: Transaction[]
 }
 
+type PlansOverviewState = {
+  mode?: 'active' | 'week' | 'month' | 'year' | 'templates'
+  offset?: number
+  splitView?: boolean
+  expandedTemplateIds?: string[]
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const ASSET_TYPES = new Set(['CASH', 'BANK', 'INVESTMENT'])
@@ -92,6 +102,11 @@ function fmtAmount(v: string | null | undefined): string {
   if (!v) return '—'
   const n = parseFloat(v)
   return isNaN(n) ? '—' : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
+}
+
+function amountValue(v: string | null | undefined): number {
+  const n = parseFloat(v ?? '')
+  return isNaN(n) ? 0 : n
 }
 
 // ─── Transaction modal ────────────────────────────────────────────────────────
@@ -579,15 +594,39 @@ function TransactionTable({ transactions, accounts, isLocked, onEdit, onDelete }
 type TxModalState = { open: boolean; tx: Transaction | null; planId: string | null; budgetId: string | null }
 type BudgetModalState = { open: boolean; budget: Budget | null }
 
+let temporaryId = 0
+
+function nextTemporaryId(kind: 'budget' | 'transaction') {
+  temporaryId += 1
+  return `new-${kind}-${temporaryId}`
+}
+
+function clonePlan(plan: Plan): Plan {
+  return structuredClone(plan)
+}
+
+function isTemporaryId(id: string) {
+  return id.startsWith('new-')
+}
+
+function sameSaveBody<T>(left: T, right: T) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 export default function PlanEditPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  const returnState = (location.state as { returnState?: PlansOverviewState } | null)?.returnState
   const [messageApi, contextHolder] = message.useMessage()
 
   const [plan, setPlan] = useState<Plan | null>(null)
+  const [originalPlan, setOriginalPlan] = useState<Plan | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [savingChanges, setSavingChanges] = useState(false)
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false)
 
   const [txModal, setTxModal] = useState<TxModalState>({ open: false, tx: null, planId: null, budgetId: null })
   const [budgetModal, setBudgetModal] = useState<BudgetModalState>({ open: false, budget: null })
@@ -607,7 +646,9 @@ export default function PlanEditPage() {
 
       if (Array.isArray(raw.transactions)) {
         // New endpoint: transactions and template data are already embedded
-        setPlan(raw as Plan)
+        const loadedPlan = raw as Plan
+        setPlan(loadedPlan)
+        setOriginalPlan(clonePlan(loadedPlan))
         return
       }
 
@@ -634,12 +675,14 @@ export default function PlanEditPage() {
         } catch { /* non-critical */ }
       }
 
-      setPlan({
+      const loadedPlan = {
         ...raw,
         template: planTemplate,
         budgets: budgetsRes.data.map((b) => ({ ...b, transactions: budgetTxs.get(b.id) ?? [] })),
         transactions: directTxs,
-      } as Plan)
+      } as Plan
+      setPlan(loadedPlan)
+      setOriginalPlan(clonePlan(loadedPlan))
     } catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } }; message?: string }
       setError(e?.response?.data?.message ?? e?.message ?? 'Failed to load')
@@ -653,61 +696,147 @@ export default function PlanEditPage() {
   // ── Transaction CRUD ──────────────────────────────────────────────────────────
 
   async function saveTx(body: TxSaveBody) {
-    try {
-      if (txModal.tx) {
-        await apiClient.patch(`/api/transactions/${txModal.tx.id}`, body)
-        messageApi.success('Transaction updated')
-      } else {
-        await apiClient.post('/api/transactions', {
-          ...body, type: 'TRANSACTION',
+    if (!plan) return
+    const fromAccount = body.fromAccountId ? accounts.find((account) => account.id === body.fromAccountId) ?? null : null
+    const toAccount = body.toAccountId ? accounts.find((account) => account.id === body.toAccountId) ?? null : null
+    const updatedTx: Transaction = txModal.tx
+      ? { ...txModal.tx, ...body, fromAccount, toAccount }
+      : {
+          id: nextTemporaryId('transaction'), ...body,
+          fromAccount, toAccount,
           planId: txModal.budgetId ? null : txModal.planId,
           budgetId: txModal.budgetId,
-        })
-        messageApi.success('Transaction added')
-      }
-      setTxModal({ open: false, tx: null, planId: null, budgetId: null })
-      load()
-    } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } }; message?: string }
-      messageApi.error(e?.response?.data?.message ?? e?.message ?? 'Save failed')
-      throw err
-    }
+          type: 'TRANSACTION', templateId: null, template: null,
+          amount: null, executedOn: null,
+        }
+    setPlan({
+      ...plan,
+      transactions: txModal.budgetId
+        ? plan.transactions
+        : txModal.tx
+          ? plan.transactions.map((tx) => tx.id === updatedTx.id ? updatedTx : tx)
+          : [...plan.transactions, updatedTx],
+      budgets: plan.budgets.map((budget) => budget.id !== txModal.budgetId
+        ? budget
+        : {
+            ...budget,
+            transactions: txModal.tx
+              ? budget.transactions.map((tx) => tx.id === updatedTx.id ? updatedTx : tx)
+              : [...budget.transactions, updatedTx],
+          }),
+    })
+    setTxModal({ open: false, tx: null, planId: null, budgetId: null })
   }
 
   async function deleteTx(tx: Transaction) {
-    try {
-      await apiClient.delete(`/api/transactions/${tx.id}`)
-      messageApi.success('Transaction deleted')
-      load()
-    } catch { messageApi.error('Delete failed') }
+    if (!plan) return
+    setPlan({
+      ...plan,
+      transactions: plan.transactions.filter((candidate) => candidate.id !== tx.id),
+      budgets: plan.budgets.map((budget) => ({
+        ...budget,
+        transactions: budget.transactions.filter((candidate) => candidate.id !== tx.id),
+      })),
+    })
   }
 
   // ── Budget CRUD ───────────────────────────────────────────────────────────────
 
   async function saveBudget(body: BudgetSaveBody) {
-    try {
-      if (budgetModal.budget) {
-        await apiClient.patch(`/api/budgets/${budgetModal.budget.id}`, body)
-        messageApi.success('Budget updated')
-      } else {
-        await apiClient.post('/api/budgets', { ...body, planId: id })
-        messageApi.success('Budget added')
-      }
-      setBudgetModal({ open: false, budget: null })
-      load()
-    } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } }; message?: string }
-      messageApi.error(e?.response?.data?.message ?? e?.message ?? 'Save failed')
-      throw err
-    }
+    if (!plan || !id) return
+    const updatedBudget: Budget = budgetModal.budget
+      ? { ...budgetModal.budget, ...body }
+      : { id: nextTemporaryId('budget'), ...body, planId: id, templateId: null, template: null, transactions: [] }
+    setPlan({
+      ...plan,
+      budgets: budgetModal.budget
+        ? plan.budgets.map((budget) => budget.id === updatedBudget.id ? updatedBudget : budget)
+        : [...plan.budgets, updatedBudget],
+    })
+    setBudgetModal({ open: false, budget: null })
   }
 
   async function deleteBudget(budget: Budget) {
+    if (!plan) return
+    setPlan({ ...plan, budgets: plan.budgets.filter((candidate) => candidate.id !== budget.id) })
+  }
+
+  function txBody(tx: Transaction): TxSaveBody {
+    return {
+      name: tx.name,
+      plannedAmount: tx.plannedAmount,
+      fromAccountId: tx.fromAccountId,
+      toAccountId: tx.toAccountId,
+      dueDateConfig: tx.dueDateConfig,
+    }
+  }
+
+  async function saveChanges() {
+    if (!plan || !originalPlan || !id) return
+    setSavingChanges(true)
     try {
-      await apiClient.delete(`/api/budgets/${budget.id}`)
-      messageApi.success('Budget deleted')
-      load()
-    } catch { messageApi.error('Delete failed') }
+      const originalBudgets = new Map(originalPlan.budgets.map((budget) => [budget.id, budget]))
+      const originalTransactions = new Map(
+        [...originalPlan.transactions, ...originalPlan.budgets.flatMap((budget) => budget.transactions)]
+          .map((tx) => [tx.id, tx]),
+      )
+      const draftTransactions = [...plan.transactions, ...plan.budgets.flatMap((budget) => budget.transactions)]
+      const draftTransactionIds = new Set(draftTransactions.map((tx) => tx.id))
+      const deletedBudgetIds = new Set(
+        originalPlan.budgets.filter((budget) => !plan.budgets.some((draft) => draft.id === budget.id)).map((budget) => budget.id),
+      )
+
+      for (const tx of originalTransactions.values()) {
+        if (!draftTransactionIds.has(tx.id) && !deletedBudgetIds.has(tx.budgetId ?? '')) {
+          await apiClient.delete(`/api/transactions/${tx.id}`)
+        }
+      }
+      for (const budget of plan.budgets) {
+        const originalBudget = originalBudgets.get(budget.id)
+        if (originalBudget && !sameSaveBody({ name: budget.name, amount: budget.amount }, { name: originalBudget.name, amount: originalBudget.amount })) {
+          await apiClient.patch(`/api/budgets/${budget.id}`, { name: budget.name, amount: budget.amount })
+        }
+      }
+
+      const budgetIds = new Map<string, string>()
+      for (const budget of plan.budgets.filter((candidate) => isTemporaryId(candidate.id))) {
+        const response = await apiClient.post<Budget>('/api/budgets', { name: budget.name, amount: budget.amount, planId: id })
+        budgetIds.set(budget.id, response.data.id)
+      }
+      for (const tx of draftTransactions) {
+        if (isTemporaryId(tx.id)) {
+          await apiClient.post('/api/transactions', {
+            ...txBody(tx), type: 'TRANSACTION',
+            planId: tx.budgetId ? null : id,
+            budgetId: tx.budgetId ? budgetIds.get(tx.budgetId) ?? tx.budgetId : null,
+          })
+          continue
+        }
+        const originalTx = originalTransactions.get(tx.id)
+        if (originalTx && !sameSaveBody(txBody(tx), txBody(originalTx))) {
+          await apiClient.patch(`/api/transactions/${tx.id}`, txBody(tx))
+        }
+      }
+      for (const budgetId of deletedBudgetIds) {
+        await apiClient.delete(`/api/budgets/${budgetId}`)
+      }
+      messageApi.success('Changes saved')
+      await load()
+      navigate('/plans', { state: returnState })
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string } }; message?: string }
+      messageApi.error(e?.response?.data?.message ?? e?.message ?? 'Save failed')
+    } finally {
+      setSavingChanges(false)
+    }
+  }
+
+  function discardChanges() {
+    if (!originalPlan) return
+    setPlan(clonePlan(originalPlan))
+    setTxModal({ open: false, tx: null, planId: null, budgetId: null })
+    setBudgetModal({ open: false, budget: null })
+    navigate('/plans', { state: returnState })
   }
 
   // ─── Render ───────────────────────────────────────────────────────────────────
@@ -717,7 +846,48 @@ export default function PlanEditPage() {
 
   // Instances in terminal states cannot be modified
   const isLocked = !plan.isTemplate && (plan.statusCode === 3 || plan.statusCode === 4)
+  const hasUnsavedChanges = !!originalPlan && JSON.stringify(plan) !== JSON.stringify(originalPlan)
   const effectiveName = plan.name ?? plan.template?.name ?? '(unnamed)'
+  const accountMap = new Map(accounts.map((account) => [account.id, account]))
+
+  function signedPlannedAmount(tx: Transaction): number {
+    const fromAccount = tx.fromAccount ?? (tx.fromAccountId ? accountMap.get(tx.fromAccountId) : undefined)
+      ?? (tx.template?.fromAccountId ? accountMap.get(tx.template.fromAccountId) : undefined)
+    const toAccount = tx.toAccount ?? (tx.toAccountId ? accountMap.get(tx.toAccountId) : undefined)
+      ?? (tx.template?.toAccountId ? accountMap.get(tx.template.toAccountId) : undefined)
+    const amount = amountValue(tx.plannedAmount ?? tx.template?.plannedAmount)
+    const kind = txKind(fromAccount?.type, toAccount?.type)
+    if (kind === 'income') return amount
+    if (kind === 'expense') return -amount
+    return 0
+  }
+
+  const budgetExpense = plan.budgets.reduce(
+    (total, budget) => total + amountValue(budget.amount ?? budget.template?.amount),
+    0,
+  )
+  const transactionSummary = [...plan.transactions, ...plan.budgets.flatMap((budget) => budget.transactions)].reduce(
+    (summary, tx) => {
+      const amount = signedPlannedAmount(tx)
+      if (amount > 0) summary.income += amount
+      if (amount < 0) summary.expense += amount
+      summary.total += amount
+      return summary
+    },
+    { income: 0, expense: -budgetExpense, total: -budgetExpense },
+  )
+  const generalTotal = plan.transactions.reduce(
+    (total, tx) => total + signedPlannedAmount(tx),
+    0,
+  )
+
+  function handleBack() {
+    if (hasUnsavedChanges) {
+      setExitConfirmOpen(true)
+      return
+    }
+    navigate('/plans', { state: returnState })
+  }
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
@@ -725,43 +895,29 @@ export default function PlanEditPage() {
 
       {/* Header */}
       <Space align="center" wrap>
-        <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => navigate('/plans')} />
+        <Button icon={<ArrowLeftOutlined />} type="text" onClick={handleBack} />
         <Title level={4} style={{ margin: 0 }}>{effectiveName}</Title>
         <Tag color="purple">{plan.intervalType}</Tag>
         {plan.isTemplate
-          ? <Tag color="volcano">Template</Tag>
+          ? <Tag color="volcano">TEMPLATE</Tag>
           : <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>}
         {plan.templateId && <Tag style={{ fontSize: 11 }}>Instance</Tag>}
+        {hasUnsavedChanges && <Tag color="gold">Unsaved changes</Tag>}
+      </Space>
+
+      <Space size="large">
+        <Text type="secondary">Income: <span style={{ color: '#3f8600' }}>{fmtAmount(String(transactionSummary.income))}</span></Text>
+        <Text type="secondary">Expenses: <span style={{ color: '#cf1322' }}>{fmtAmount(String(transactionSummary.expense))}</span></Text>
+        <Text type="secondary">Total: <span style={{ color: transactionSummary.total < 0 ? '#cf1322' : '#3f8600' }}>{fmtAmount(String(transactionSummary.total))}</span></Text>
       </Space>
 
       {isLocked && (
         <Alert
           type="warning"
           showIcon
-          message={`This plan is ${STATUS_LABEL[plan.statusCode].toLowerCase()} and cannot be modified.`}
+          title={`This plan is ${STATUS_LABEL[plan.statusCode].toLowerCase()} and cannot be modified.`}
         />
       )}
-
-      {/* Direct plan transactions */}
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <Title level={5} style={{ margin: 0 }}>Transactions</Title>
-          {!isLocked && (
-            <Button size="small" icon={<PlusOutlined />} onClick={() => setTxModal({ open: true, tx: null, planId: id!, budgetId: null })}>
-              Add
-            </Button>
-          )}
-        </div>
-        <TransactionTable
-          transactions={plan.transactions}
-          accounts={accounts}
-          isLocked={isLocked}
-          onEdit={(tx) => setTxModal({ open: true, tx, planId: tx.planId, budgetId: tx.budgetId })}
-          onDelete={deleteTx}
-        />
-      </div>
-
-      <Divider />
 
       {/* Budgets */}
       <div>
@@ -773,25 +929,66 @@ export default function PlanEditPage() {
             </Button>
           )}
         </div>
-        {plan.budgets.length === 0
-          ? <Text type="secondary">No budgets defined.</Text>
-          : (
-            <Collapse
-              items={plan.budgets.map((budget) => {
+        <Collapse
+          items={[
+            {
+              key: '__general__',
+              label: (
+                <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                  <Text strong>General</Text>
+                  <Text style={{ marginLeft: 'auto', fontSize: 12, color: generalTotal < 0 ? '#cf1322' : '#3f8600' }}>
+                    {fmtAmount(String(generalTotal))}
+                  </Text>
+                </div>
+              ),
+              children: (
+                <div style={{ width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    {plan.transactions.length > 0 && <Title level={5} style={{ margin: 0 }}>Transactions</Title>}
+                    {!isLocked && plan.transactions.length > 0 && (
+                      <Button size="small" icon={<PlusOutlined />} onClick={() => setTxModal({ open: true, tx: null, planId: id!, budgetId: null })}>
+                        Add Transaction
+                      </Button>
+                    )}
+                  </div>
+                  {plan.transactions.length > 0 ? (
+                    <TransactionTable
+                      transactions={plan.transactions}
+                      accounts={accounts}
+                      isLocked={isLocked}
+                      onEdit={(tx) => setTxModal({ open: true, tx, planId: tx.planId, budgetId: tx.budgetId })}
+                      onDelete={deleteTx}
+                    />
+                  ) : (
+                    <div style={{ minHeight: 96, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                      <Text type="secondary">There are no transactions yet.</Text>
+                      {!isLocked && (
+                        <Button size="small" icon={<PlusOutlined />} onClick={() => setTxModal({ open: true, tx: null, planId: id!, budgetId: null })}>
+                          Add Transaction
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ),
+            },
+            ...plan.budgets.map((budget) => {
                 const effectiveBudgetName = budget.name ?? budget.template?.name ?? '(unnamed)'
                 const effectiveAmount = budget.amount ?? budget.template?.amount
                 const amountIsInherited = !budget.amount && !!budget.template?.amount
+                const budgetTotal = -amountValue(effectiveAmount) + budget.transactions.reduce(
+                  (total, tx) => total + signedPlannedAmount(tx),
+                  0,
+                )
                 return {
                   key: budget.id,
                   label: (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
                       <Text strong style={{ flex: 1 }}>{effectiveBudgetName}</Text>
-                      {effectiveAmount && (
-                        <Text type="secondary" style={{ fontSize: 12, fontStyle: amountIsInherited ? 'italic' : undefined }}>
-                          {fmtAmount(effectiveAmount)}
+                      <Text style={{ fontSize: 12, color: budgetTotal < 0 ? '#cf1322' : '#3f8600', fontStyle: amountIsInherited ? 'italic' : undefined }}>
+                          {fmtAmount(String(budgetTotal))}
                           {amountIsInherited && ' (inherited)'}
-                        </Text>
-                      )}
+                      </Text>
                       {!isLocked && (
                         <>
                           <Button
@@ -814,30 +1011,45 @@ export default function PlanEditPage() {
                     </div>
                   ),
                   children: (
-                    <Space direction="vertical" style={{ width: '100%' }}>
-                      {!isLocked && (
-                        <div style={{ textAlign: 'right' }}>
+                    <div style={{ width: '100%' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        {budget.transactions.length > 0 && <Title level={5} style={{ margin: 0 }}>Transactions</Title>}
+                        {!isLocked && budget.transactions.length > 0 && (
                           <Button
                             size="small" icon={<PlusOutlined />}
                             onClick={() => setTxModal({ open: true, tx: null, planId: null, budgetId: budget.id })}
                           >
                             Add Transaction
                           </Button>
+                        )}
+                      </div>
+                      {budget.transactions.length > 0 ? (
+                        <TransactionTable
+                          transactions={budget.transactions}
+                          accounts={accounts}
+                          isLocked={isLocked}
+                          onEdit={(tx) => setTxModal({ open: true, tx, planId: tx.planId, budgetId: tx.budgetId })}
+                          onDelete={deleteTx}
+                        />
+                      ) : (
+                        <div style={{ minHeight: 96, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                          <Text type="secondary">There are no transactions yet.</Text>
+                          {!isLocked && (
+                            <Button
+                              size="small" icon={<PlusOutlined />}
+                              onClick={() => setTxModal({ open: true, tx: null, planId: null, budgetId: budget.id })}
+                            >
+                              Add Transaction
+                            </Button>
+                          )}
                         </div>
                       )}
-                      <TransactionTable
-                        transactions={budget.transactions}
-                        accounts={accounts}
-                        isLocked={isLocked}
-                        onEdit={(tx) => setTxModal({ open: true, tx, planId: tx.planId, budgetId: tx.budgetId })}
-                        onDelete={deleteTx}
-                      />
-                    </Space>
+                    </div>
                   ),
                 }
-              })}
-            />
-          )}
+            }),
+          ]}
+        />
       </div>
 
       {/* Modals */}
@@ -855,6 +1067,20 @@ export default function PlanEditPage() {
         onOk={saveBudget}
         onCancel={() => setBudgetModal({ open: false, budget: null })}
       />
+      <Modal
+        open={exitConfirmOpen}
+        title="Unsaved changes"
+        onCancel={() => setExitConfirmOpen(false)}
+        closable={!savingChanges}
+        maskClosable={!savingChanges}
+        footer={[
+          <Button key="continue" disabled={savingChanges} onClick={() => setExitConfirmOpen(false)}>Continue editing</Button>,
+          <Button key="discard" danger disabled={savingChanges} onClick={discardChanges}>Discard changes</Button>,
+          <Button key="save" type="primary" loading={savingChanges} onClick={saveChanges}>Save changes</Button>,
+        ]}
+      >
+        <Text>You have unsaved changes. Save them before leaving?</Text>
+      </Modal>
     </Space>
   )
 }
