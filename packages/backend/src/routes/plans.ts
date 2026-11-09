@@ -180,12 +180,31 @@ plansRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
 })
 
 // DELETE /api/plans/:id
-plansRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
+plansRouter.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
   const id = String(req.params.id)
   const existing = await db.plan.findFirst({
     where: { id, ownerId: req.user!.sub },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  await db.plan.delete({ where: { id } })
-  res.status(204).end()
+  try {
+    const deleted = await db.$transaction(async (tx) => {
+      // Instances are detached by the FK, so keep what they inherited from this template
+      if (existing.isTemplate) {
+        const instances = await tx.plan.findMany({ where: { templateId: id }, select: { id: true } })
+        await freezeInheritedValues(tx, instances.map((i) => i.id))
+      }
+      const budgetIds = (await tx.budget.findMany({ where: { planId: id }, select: { id: true } })).map((b) => b.id)
+      const ownTransactions = { OR: [{ planId: id }, { budgetId: { in: budgetIds } }] }
+      if (await tx.transaction.count({ where: { ...ownTransactions, executedOn: { not: null } } }) > 0) return false
+      await tx.transactionTag.deleteMany({ where: { transaction: ownTransactions } })
+      await tx.transaction.deleteMany({ where: ownTransactions })
+      await tx.budget.deleteMany({ where: { planId: id } })
+      await tx.plan.delete({ where: { id } })
+      return true
+    })
+    if (!deleted) { res.status(409).json({ error: 'Plan has executed transactions and cannot be deleted' }); return }
+    res.status(204).end()
+  } catch (err) {
+    next(err)
+  }
 })

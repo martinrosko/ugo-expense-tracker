@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Typography,
   Space,
@@ -23,7 +23,7 @@ import {
   Input,
   Select,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -65,6 +65,7 @@ type PlanDetailed = {
   endDate: string | null
   intervalType: string
   templateIntervalType?: string | null
+  templateId?: string | null
   isTemplate: boolean
   stateCode: number
   statusCode: number
@@ -513,7 +514,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
   )
 }
 
-function PlanHeader({ plan, stats, splitView }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean }) {
+function PlanHeader({ plan, stats, splitView, onDiscard }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean; onDiscard?: (plan: PlanDetailed) => void }) {
   const navigate = useNavigate()
   const dateRange = [plan.startDate, plan.endDate]
     .map((d) => (d ? new Date(d).toLocaleDateString('sk-SK') : ''))
@@ -536,6 +537,21 @@ function PlanHeader({ plan, stats, splitView }: { plan: PlanDetailed; stats: Bud
           )}
         </div>
         <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
+        {plan.statusCode === 1 && !plan.templateId && onDiscard && (
+          <Popconfirm
+            title="Discard this plan?"
+            description="It has no template anymore and will be marked as Cancelled."
+            onConfirm={() => onDiscard(plan)}
+            okText="Discard"
+            okType="danger"
+            cancelText="Cancel"
+            onPopupClick={(e) => e.stopPropagation()}
+          >
+            <Tooltip title="Discard plan">
+              <Button size="small" type="text" danger icon={<StopOutlined />} onClick={(e) => e.stopPropagation()} />
+            </Tooltip>
+          </Popconfirm>
+        )}
         {plan.statusCode !== 3 && (
           <Tooltip title="Edit plan">
             <Button
@@ -742,7 +758,7 @@ export default function PlansOverviewPage() {
           if (mode === 'templates') {
             setPlans(res.data.filter((p) => p.isTemplate))
           } else {
-            setPlans(res.data.filter((p) => !p.isTemplate))
+            setPlans(res.data.filter((p) => !p.isTemplate && !(mode === 'active' && p.statusCode === 4)))
           }
         }
       })
@@ -764,16 +780,27 @@ export default function PlansOverviewPage() {
       .filter((g) => g.plans.length > 0)
   }, [mode, plans])
 
+  const discardPlan = useCallback(async (plan: PlanDetailed) => {
+    try {
+      await apiClient.patch(`/api/plans/${plan.id}`, { statusCode: 4 })
+      setPlans((current) => current.map((p) => p.id === plan.id ? { ...p, statusCode: 4 } : p).filter((p) => p.statusCode !== 4 || mode !== 'active'))
+      messageApi.success('Plan discarded')
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string; error?: string } }; message?: string }
+      messageApi.error(e.response?.data?.message ?? e.response?.data?.error ?? e.message ?? 'Failed to discard plan')
+    }
+  }, [mode, messageApi])
+
   const collapseItems = useMemo(() => (list: PlanDetailed[]) => list.map((plan) => {
     const from = period?.from
     const to = period?.to
     const stats = planStats(plan, from, to)
     return {
       key: plan.id,
-      label: <PlanHeader plan={plan} stats={stats} splitView={splitView} />,
+      label: <PlanHeader plan={plan} stats={stats} splitView={splitView} onDiscard={discardPlan} />,
       children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} splitView={splitView} />,
     }
-  }), [period, splitView])
+  }), [period, splitView, discardPlan])
 
   // Active plans default open
   const activeDefaultKeys = useMemo(
