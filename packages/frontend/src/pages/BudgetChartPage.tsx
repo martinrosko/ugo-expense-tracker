@@ -17,6 +17,7 @@ import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import apiClient from '../api/apiClient'
+import { planLabel } from '../features/planLabel'
 import {
   ResponsiveContainer,
   LineChart,
@@ -38,7 +39,7 @@ const { RangePicker } = DatePicker
 
 type PlanOption = {
   id: string; name: string | null; isTemplate: boolean
-  intervalType: string; startDate: string | null; templateId: string | null; statusCode: number
+  intervalType: string; templateIntervalType?: string | null; startDate: string | null; templateId: string | null; statusCode: number
 }
 type BudgetOption = { id: string; name: string | null; planId: string }
 
@@ -54,24 +55,6 @@ type PeriodMode = 'month' | 'quarter' | 'year' | 'custom' | 'all'
 
 function toLocalDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-function getISOWeek(date: Date): number {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
-  const day = d.getUTCDay() || 7
-  d.setUTCDate(d.getUTCDate() + 4 - day)
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
-  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7)
-}
-
-function planLabel(plan: { name: string | null; isTemplate: boolean; intervalType: string; startDate: string | null }): string {
-  const base = plan.name ?? '(unnamed)'
-  if (plan.isTemplate || !plan.startDate) return base
-  const d = new Date(plan.startDate)
-  if (plan.intervalType === 'YEARLY') return `${base} - ${d.getFullYear()}`
-  if (plan.intervalType === 'MONTHLY') return `${base} - ${d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
-  if (plan.intervalType === 'WEEKLY') return `${base} - Week ${String(getISOWeek(d)).padStart(2, '0')}.${d.getFullYear()}`
-  return base
 }
 
 function getPeriod(mode: Exclude<PeriodMode, 'all' | 'custom'>, offset: number): { from: Date; to: Date; label: string } {

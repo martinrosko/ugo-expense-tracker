@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
+import { freezeInheritedValues } from '../services/freezeInheritedValues.js'
 
 export const plansRouter = Router()
 
@@ -30,7 +31,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
     const plans = await db.plan.findMany({
       where: { ownerId, ...dateWhere, ...statusWhere },
       include: {
-        template: { select: { name: true, defaultAccountId: true } },
+        template: { select: { name: true, defaultAccountId: true, intervalType: true } },
         budgets: {
           include: {
             template: { select: { name: true, amount: true } },
@@ -63,6 +64,8 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
       ...plan,
       name: plan.name ?? planTpl?.name ?? null,
       defaultAccountId: plan.defaultAccountId ?? planTpl?.defaultAccountId ?? null,
+      // Instances are stored as ONE_TIME; the recurrence comes from their template
+      templateIntervalType: planTpl?.intervalType ?? null,
       budgets: budgets.map(({ template: budgetTpl, transactions: txs, ...budget }) => ({
         ...budget,
         name: budget.name ?? budgetTpl?.name ?? null,
@@ -93,7 +96,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const rawPlans = await db.plan.findMany({
     where: { ownerId, ...dateWhere, ...statusWhere },
     include: {
-      template: { select: { name: true, defaultAccountId: true } },
+      template: { select: { name: true, defaultAccountId: true, intervalType: true } },
       budgets: true,
     },
     orderBy: { startDate: 'desc' },
@@ -102,6 +105,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
     ...plan,
     name: plan.name ?? template?.name ?? null,
     defaultAccountId: plan.defaultAccountId ?? template?.defaultAccountId ?? null,
+    templateIntervalType: template?.intervalType ?? null,
   }))
   res.json(plans)
 })
@@ -152,20 +156,25 @@ plansRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
   const { name, startDate, endDate, intervalType, isTemplate, templateId, defaultAccountId, recurrenceConfig, stateCode, statusCode } = req.body
-  const plan = await db.plan.update({
-    where: { id },
-    data: {
-      name,
-      startDate: startDate ? new Date(startDate) : undefined,
-      endDate: endDate ? new Date(endDate) : undefined,
-      intervalType,
-      isTemplate,
-      templateId,
-      defaultAccountId,
-      recurrenceConfig,
-      stateCode,
-      statusCode,
-    },
+  const plan = await db.$transaction(async (tx) => {
+    const updated = await tx.plan.update({
+      where: { id },
+      data: {
+        name,
+        startDate: startDate ? new Date(startDate) : undefined,
+        endDate: endDate ? new Date(endDate) : undefined,
+        intervalType,
+        isTemplate,
+        templateId,
+        defaultAccountId,
+        recurrenceConfig,
+        stateCode,
+        statusCode,
+      },
+    })
+    // Completed history must not change when the template does
+    if (updated.statusCode === 3 && existing.statusCode !== 3) await freezeInheritedValues(tx, [id])
+    return tx.plan.findUniqueOrThrow({ where: { id } })
   })
   res.json(plan)
 })

@@ -21,8 +21,11 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
     where: {
       ...ownerFilter(req.user!.sub),
       ...(budgetId ? { budgetId: String(budgetId) } : {}),
-      ...(planId ? { OR: [{ planId: String(planId) }, { budget: { planId: String(planId) } }] } : {}),
-      ...(accountId ? { AND: [{ OR: [{ fromAccountId: String(accountId) }, { toAccountId: String(accountId) }] }] } : {}),
+      // Separate AND entries so the OR clauses don't overwrite each other or the owner filter
+      AND: [
+        ...(planId ? [{ OR: [{ planId: String(planId) }, { budget: { planId: String(planId) } }] }] : []),
+        ...(accountId ? [{ OR: [{ fromAccountId: String(accountId) }, { toAccountId: String(accountId) }] }] : []),
+      ],
       ...(unmatched === 'true' ? { bankTicketId: null } : {}),
       ...(executed === 'true' ? { executedOn: { not: null } } : {}),
       ...(fromDate && toDate ? { executedOn: { gte: fromDate, lte: toDate } } : {}),

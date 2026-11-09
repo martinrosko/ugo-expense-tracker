@@ -9,6 +9,7 @@ import { budgetsRouter } from './routes/budgets.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { bankTicketsRouter } from './routes/bankTickets.js'
 import { tagsRouter } from './routes/tags.js'
+import { startPlanStatusScheduler } from './jobs/planStatus.js'
 
 const app = express()
 const PORT = Number(process.env.PORT ?? 3000)
@@ -42,6 +43,7 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 // ─── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`[backend] listening on http://0.0.0.0:${PORT}`)
+  startPlanStatusScheduler()
 })
 
 export default app

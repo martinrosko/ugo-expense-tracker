@@ -1,7 +1,8 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import { Layout, Menu, Typography } from 'antd'
 import { UploadOutlined, CheckSquareOutlined, ApiOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined, AreaChartOutlined } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
+import apiClient from '../api/apiClient'
 
 const { Header, Sider, Content } = Layout
 
@@ -23,6 +24,12 @@ const NAV_ITEMS = [
 export default function AppLayout({ children }: AppLayoutProps) {
   const navigate = useNavigate()
   const location = useLocation()
+
+  // Lets the server initialize the user's home timezone (used for plan status automation)
+  useEffect(() => {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    apiClient.get('/api/users/me', { params: { tz } }).catch(() => {})
+  }, [])
 
   return (
     <Layout style={{ minHeight: '100vh' }}>

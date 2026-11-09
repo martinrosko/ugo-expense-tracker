@@ -13,6 +13,7 @@ model User {
   id             String        @id            // Keycloak subject UUID
   email          String        @unique
   name           String
+  timezone       String?       /// IANA name; null until first set. Defines "today" for plan status automation
   businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
   businessUnitId String?
   accounts       Account[]
@@ -83,6 +84,8 @@ model Plan {
   transactions      Transaction[]
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
+
+  @@index([statusCode, startDate, endDate])
 }
 
 enum PlanIntervalType {

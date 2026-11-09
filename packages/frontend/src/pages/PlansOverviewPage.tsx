@@ -16,13 +16,20 @@ import {
   DatePicker,
   Tooltip,
   Switch,
+  Popconfirm,
+  message,
+  Modal,
+  Form,
+  Input,
+  Select,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
 import apiClient from '../api/apiClient'
 import { computePlannedOn } from '../features/helpers'
+import { planLabel } from '../features/planLabel'
 
 dayjs.extend(isoWeek)
 
@@ -57,6 +64,7 @@ type PlanDetailed = {
   startDate: string | null
   endDate: string | null
   intervalType: string
+  templateIntervalType?: string | null
   isTemplate: boolean
   stateCode: number
   statusCode: number
@@ -67,12 +75,29 @@ type PlanDetailed = {
 // ─── Period helpers ───────────────────────────────────────────────────────────
 
 type PeriodMode = 'active' | 'week' | 'month' | 'year' | 'templates'
+type PeriodKind = 'week' | 'month' | 'year'
+
+function isPeriodKind(m: PeriodMode): m is PeriodKind {
+  return m === 'week' || m === 'month' || m === 'year'
+}
 
 type PlansOverviewState = {
   mode?: PeriodMode
   offset?: number
   splitView?: boolean
   expandedTemplateIds?: string[]
+  expandedPlanIds?: string[] | null // null = use per-view defaults
+  savedDates?: Partial<Record<PeriodKind, string>> // last viewed period start (YYYY-MM-DD) per mode
+}
+
+const STATE_STORAGE_KEY = 'plansOverviewState'
+
+function loadSavedState(): PlansOverviewState {
+  try {
+    return JSON.parse(sessionStorage.getItem(STATE_STORAGE_KEY) ?? '{}') as PlansOverviewState
+  } catch {
+    return {}
+  }
 }
 
 function getISOWeek(date: Date): number {
@@ -89,7 +114,7 @@ function toLocalDateStr(d: Date): string {
 }
 
 /** Compute the offset (relative to today) for a dayjs value picked by the user */
-function computeOffset(mode: Exclude<PeriodMode, 'active'>, picked: Dayjs): number {
+function computeOffset(mode: PeriodKind, picked: Dayjs): number {
   const now = new Date()
   if (mode === 'month') {
     return (picked.year() - now.getFullYear()) * 12 + (picked.month() - now.getMonth())
@@ -127,23 +152,6 @@ function getPeriod(mode: Exclude<PeriodMode, 'active'>, offset: number): { from:
 }
 
 // ─── Transaction classification ──────────────────────────────────────────────
-
-function planLabel(plan: { name: string | null; isTemplate: boolean; intervalType: string; startDate: string | null }): string {
-  const base = plan.name ?? '(unnamed)'
-  if (plan.isTemplate || !plan.startDate) return base
-  const d = new Date(plan.startDate)
-  if (plan.intervalType === 'YEARLY') {
-    return `${base} - ${d.getFullYear()}`
-  }
-  if (plan.intervalType === 'MONTHLY') {
-    return `${base} - ${d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
-  }
-  if (plan.intervalType === 'WEEKLY') {
-    const week = getISOWeek(d)
-    return `${base} - Week ${String(week).padStart(2, '0')}.${d.getFullYear()}`
-  }
-  return base
-}
 
 const ASSET_TYPES = new Set(['CASH', 'BANK', 'INVESTMENT'])
 
@@ -245,7 +253,7 @@ function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: st
   const unplannedActual = txs
     .filter((t) => t.executedOn !== null && !t.dueDateConfig)
     .reduce((s, t) => s + signedAmount(t, t.amount), 0)
-  let reservation = fullEnvelope + unplannedActual // how much of the full envelope is still reserved
+  let reservation = fullEnvelope - unplannedActual // envelope minus what was already spent
   // Clamp: can't reserve more than the envelope, can't go below 0
   if (fullEnvelope <= 0) {
     reservation = Math.max(fullEnvelope, Math.min(0, reservation))
@@ -490,7 +498,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
               }
               const budget = budgets.find((b) => b.id === row.key)
               if (!budget) return null
-              const qs = new URLSearchParams({ budgetId: budget.id, budgetName: row.name })
+              const qs = new URLSearchParams({ budgetId: budget.id, budgetName: row.name, ...(planName ? { planName } : {}) })
               return (
                 <Tooltip title="View transactions">
                   <Button size="small" type="text" icon={<UnorderedListOutlined />}
@@ -528,12 +536,14 @@ function PlanHeader({ plan, stats, splitView }: { plan: PlanDetailed; stats: Bud
           )}
         </div>
         <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
-        <Tooltip title="Edit plan">
-          <Button
-            size="small" type="text" icon={<EditOutlined />}
-            onClick={(e) => { e.stopPropagation(); navigate(`/plans/${plan.id}/edit`) }}
-          />
-        </Tooltip>
+        {plan.statusCode !== 3 && (
+          <Tooltip title="Edit plan">
+            <Button
+              size="small" type="text" icon={<EditOutlined />}
+              onClick={(e) => { e.stopPropagation(); navigate(`/plans/${plan.id}/edit`) }}
+            />
+          </Tooltip>
+        )}
         <Tooltip title="View transactions">
           <Button
             size="small" type="text" icon={<UnorderedListOutlined />}
@@ -617,23 +627,97 @@ function PlanHeader({ plan, stats, splitView }: { plan: PlanDetailed; stats: Bud
 export default function PlansOverviewPage() {
   const navigate = useNavigate()
   const location = useLocation()
-  const returnState = location.state as PlansOverviewState | null
-  const [mode, setMode] = useState<PeriodMode>(returnState?.mode ?? 'active')
-  const [offset, setOffset] = useState(returnState?.offset ?? 0)
+  const returnState = useMemo(
+    () => ({ ...loadSavedState(), ...(location.state as PlansOverviewState | null) }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+  const [messageApi, contextHolder] = message.useMessage()
+  const [mode, setMode] = useState<PeriodMode>(returnState.mode ?? 'active')
+  const [offset, setOffset] = useState(returnState.offset ?? 0)
   const [plans, setPlans] = useState<PlanDetailed[]>([])
-  const [splitView, setSplitView] = useState(returnState?.splitView ?? false)
-  const [expandedTemplateIds, setExpandedTemplateIds] = useState<string[]>(returnState?.expandedTemplateIds ?? [])
+  const [splitView, setSplitView] = useState(returnState.splitView ?? false)
+  const [expandedTemplateIds, setExpandedTemplateIds] = useState<string[]>(returnState.expandedTemplateIds ?? [])
+  const [expandedPlanIds, setExpandedPlanIds] = useState<string[] | null>(returnState.expandedPlanIds ?? null)
+  const [savedDates, setSavedDates] = useState<Partial<Record<PeriodKind, string>>>(returnState.savedDates ?? {})
   const [loading, setLoading] = useState(false)
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createForm] = Form.useForm<{ name: string; intervalType: string }>()
+
+  useEffect(() => {
+    const state: PlansOverviewState = { mode, offset, splitView, expandedTemplateIds, expandedPlanIds, savedDates }
+    sessionStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state))
+  }, [mode, offset, splitView, expandedTemplateIds, expandedPlanIds, savedDates])
+
+  function changeExpanded(groupPlans: PlanDetailed[], keys: string | string[], defaults: string[]) {
+    const groupIds = new Set(groupPlans.map((p) => p.id))
+    const next = typeof keys === 'string' ? [keys] : keys
+    setExpandedPlanIds([...(expandedPlanIds ?? defaults).filter((id) => !groupIds.has(id)), ...next])
+  }
+
+  async function createTemplate() {
+    const values = await createForm.validateFields()
+    setCreating(true)
+    try {
+      const res = await apiClient.post<{ id: string }>('/api/plans', {
+        name: values.name.trim(),
+        intervalType: values.intervalType,
+        isTemplate: true,
+      })
+      setCreateOpen(false)
+      navigate(`/plans/${res.data.id}/edit`, {
+        state: { returnState: { mode, offset, splitView, expandedTemplateIds } },
+      })
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string; error?: string } }; message?: string }
+      messageApi.error(e.response?.data?.message ?? e.response?.data?.error ?? e.message ?? 'Failed to create plan template')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function deleteTemplate(plan: PlanDetailed) {
+    setDeletingPlanId(plan.id)
+    try {
+      await apiClient.delete(`/api/plans/${plan.id}`)
+      setPlans((current) => current.filter((candidate) => candidate.id !== plan.id))
+      messageApi.success('Plan template deleted')
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string; error?: string } }; message?: string }
+      messageApi.error(e.response?.data?.message ?? e.response?.data?.error ?? e.message ?? 'Failed to delete plan template')
+    } finally {
+      setDeletingPlanId(null)
+    }
+  }
 
   const period = useMemo(
     () => mode !== 'active' && mode !== 'templates' ? getPeriod(mode, offset) : null,
     [mode, offset]
   )
 
-  function handleModeChange(m: PeriodMode) {
-    setMode(m)
-    setOffset(0)
+  function handleModeChange(next: PeriodMode) {
+    const saved = { ...savedDates }
+    if (period && isPeriodKind(mode)) saved[mode] = toLocalDateStr(period.from)
+    setSavedDates(saved)
+
+    let nextOffset = 0
+    if (isPeriodKind(next)) {
+      const savedDate = saved[next] ? dayjs(saved[next]) : null
+      const savedOffset = savedDate ? computeOffset(next, savedDate) : 0
+      if (!period) {
+        nextOffset = savedOffset
+      } else {
+        // Prefer the remembered period if it overlaps the one being left, else the one containing its start
+        const candidate = savedDate ? getPeriod(next, savedOffset) : null
+        const overlaps = candidate && candidate.from <= period.to && candidate.to >= period.from
+        nextOffset = overlaps ? savedOffset : computeOffset(next, dayjs(period.from))
+      }
+    }
+    setMode(next)
+    setOffset(nextOffset)
   }
 
   useEffect(() => {
@@ -699,6 +783,32 @@ export default function PlansOverviewPage() {
 
   return (
     <Space orientation="vertical" style={{ width: '100%' }} size="large">
+      {contextHolder}
+      <Modal
+        open={createOpen}
+        title="New plan template"
+        okText="Create"
+        confirmLoading={creating}
+        onOk={createTemplate}
+        onCancel={() => setCreateOpen(false)}
+        destroyOnClose
+      >
+        <Form form={createForm} layout="vertical" initialValues={{ intervalType: 'MONTHLY' }}>
+          <Form.Item name="name" label="Name" rules={[{ required: true, whitespace: true, message: 'Enter a name' }]}>
+            <Input autoFocus />
+          </Form.Item>
+          <Form.Item name="intervalType" label="Interval" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'WEEKLY', label: 'Weekly' },
+                { value: 'MONTHLY', label: 'Monthly' },
+                { value: 'YEARLY', label: 'Yearly' },
+                { value: 'ONE_TIME', label: 'One time' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
       {/* Controls */}
       <Row justify="space-between" align="middle" wrap={false}>
         <Col>
@@ -740,6 +850,16 @@ export default function PlansOverviewPage() {
         )}
         <Col style={{ minWidth: 140, textAlign: 'right' }}>
           <Space>
+            {mode === 'templates' && (
+              <Button
+                type="primary"
+                size="small"
+                icon={<PlusOutlined />}
+                onClick={() => { createForm.resetFields(); setCreateOpen(true) }}
+              >
+                New template
+              </Button>
+            )}
             <Switch size="small" checked={splitView} onChange={setSplitView} />
             <Text type="secondary" style={{ fontSize: 12 }}>Income / Expense</Text>
           </Space>
@@ -779,6 +899,25 @@ export default function PlansOverviewPage() {
                                 }}
                               />
                             </Tooltip>
+                            <Popconfirm
+                              title="Delete this plan template?"
+                              description="This action cannot be undone."
+                              onConfirm={() => deleteTemplate(plan)}
+                              okText="Delete"
+                              okType="danger"
+                              cancelText="Cancel"
+                            >
+                              <Tooltip title="Delete template">
+                                <Button
+                                  size="small"
+                                  type="text"
+                                  danger
+                                  loading={deletingPlanId === plan.id}
+                                  icon={<DeleteOutlined />}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              </Tooltip>
+                            </Popconfirm>
                           </div>
                           {splitView ? (
                             <div style={{ marginTop: 4 }}>
@@ -822,14 +961,24 @@ export default function PlansOverviewPage() {
               : <Text type="secondary">No plan templates found.</Text>
           ) : mode === 'active' ? (
             plans.length > 0
-              ? <Collapse styles={{ body: { padding: 0 } }} items={collapseItems(plans)} defaultActiveKey={activeDefaultKeys} />
+              ? <Collapse
+                  styles={{ body: { padding: 0 } }}
+                  items={collapseItems(plans)}
+                  activeKey={expandedPlanIds ?? activeDefaultKeys}
+                  onChange={(keys) => changeExpanded(plans, keys, activeDefaultKeys)}
+                />
               : <Text type="secondary">No active plans found.</Text>
           ) : (
             groupedByStatus && groupedByStatus.length > 0
               ? groupedByStatus.map((group) => (
                   <div key={group.key}>
                     <Title level={5} style={{ marginBottom: 8 }}>{group.label}</Title>
-                    <Collapse styles={{ body: { padding: 0 } }} items={collapseItems(group.plans)} />
+                    <Collapse
+                      styles={{ body: { padding: 0 } }}
+                      items={collapseItems(group.plans)}
+                      activeKey={expandedPlanIds ?? []}
+                      onChange={(keys) => changeExpanded(group.plans, keys, [])}
+                    />
                   </div>
                 ))
               : <Text type="secondary">No plans found for this period.</Text>

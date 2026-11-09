@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import {
   Typography,
   Space,
@@ -33,6 +33,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useSearchParams } from 'react-router-dom'
 import apiClient from '../api/apiClient'
+import { planLabel } from '../features/planLabel'
 
 dayjs.extend(isoWeek)
 
@@ -43,7 +44,7 @@ const { RangePicker } = DatePicker
 
 type Account = { id: string; name: string; type: string }
 type BudgetOption = { id: string; name: string | null }
-type PlanOption = { id: string; name: string | null; isTemplate: boolean; intervalType: string; startDate: string | null; templateId: string | null; statusCode: number }
+type PlanOption = { id: string; name: string | null; isTemplate: boolean; intervalType: string; templateIntervalType?: string | null; startDate: string | null; templateId: string | null; statusCode: number }
 
 type Transaction = {
   id: string
@@ -74,16 +75,6 @@ function getISOWeek(date: Date): number {
   d.setUTCDate(d.getUTCDate() + 4 - day)
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
   return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7)
-}
-
-function planLabel(plan: { name: string | null; isTemplate: boolean; intervalType: string; startDate: string | null }): string {
-  const base = plan.name ?? '(unnamed)'
-  if (plan.isTemplate || !plan.startDate) return base
-  const d = new Date(plan.startDate)
-  if (plan.intervalType === 'YEARLY') return `${base} - ${d.getFullYear()}`
-  if (plan.intervalType === 'MONTHLY') return `${base} - ${d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
-  if (plan.intervalType === 'WEEKLY') return `${base} - Week ${String(getISOWeek(d)).padStart(2, '0')}.${d.getFullYear()}`
-  return base
 }
 
 function getPeriod(mode: Exclude<PeriodMode, 'all' | 'custom'>, offset: number): { from: Date; to: Date; label: string } {
@@ -235,11 +226,9 @@ export default function TransactionsPage() {
   // URL context — sets initial filter state and display title
   const ctxPlanId = searchParams.get('planId') ?? undefined
   const ctxBudgetId = searchParams.get('budgetId') ?? undefined
-  const ctxPlanName = searchParams.get('planName') ?? undefined
-  const ctxBudgetName = searchParams.get('budgetName') ?? undefined
 
-  // Period state
-  const [mode, setMode] = useState<PeriodMode>('month')
+  // Plan/budget context starts with all transactions
+  const [mode, setMode] = useState<PeriodMode>(ctxPlanId || ctxBudgetId ? 'all' : 'month')
   const [offset, setOffset] = useState(0)
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null)
 
@@ -254,6 +243,7 @@ export default function TransactionsPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [allPlans, setAllPlans] = useState<PlanOption[]>([])
   const [budgetOptions, setBudgetOptions] = useState<BudgetOption[]>([])
+  const [planRange, setPlanRange] = useState<{ start: Dayjs; end: Dayjs } | null>(null)
 
   // Transactions
   const [transactions, setTransactions] = useState<Transaction[]>([])
@@ -274,18 +264,26 @@ export default function TransactionsPage() {
   function handleModeChange(m: PeriodMode) {
     setMode(m)
     setOffset(0)
+    if (m === 'all' || !planRange) return
+    // Start at the filtered plan's range
+    if (m === 'custom') setCustomRange([planRange.start, planRange.end])
+    else setOffset(computeOffset(m, planRange.start))
   }
 
   // Fetch reference data once
   useEffect(() => {
     apiClient.get<Account[]>('/api/accounts').then((r) => setAccounts(r.data)).catch(() => {})
-    if (!ctxBudgetId) {
-      apiClient.get<PlanOption[]>('/api/plans').then((r) => setAllPlans(r.data)).catch(() => {})
-    }
-  }, [ctxBudgetId])
+    apiClient.get<PlanOption[]>('/api/plans').then((r) => setAllPlans(r.data)).catch(() => {})
+  }, [])
 
-  // Don't clear filterBudgetId on initial plan effect run (preserves ctxBudgetId)
-  const initialPlanFetch = useRef(true)
+  // Preconfigure the plan filter from a budget context
+  useEffect(() => {
+    if (!ctxBudgetId) return
+    apiClient
+      .get<{ planId: string }>(`/api/budgets/${ctxBudgetId}`)
+      .then((r) => setFilterPlanId(r.data.planId))
+      .catch(() => {})
+  }, [ctxBudgetId])
 
   // Build TreeSelect data: templates sorted by interval→name, instances (active/completed) under each template
   const planTreeData = useMemo(() => {
@@ -300,7 +298,7 @@ export default function TransactionsPage() {
     const templates = allPlans.filter((p) => p.isTemplate).sort(intervalSort)
 
     const instances = allPlans.filter(
-      (p) => !p.isTemplate && (p.statusCode === 1 || p.statusCode === 3)
+      (p) => !p.isTemplate && (p.statusCode === 1 || p.statusCode === 3 || p.id === filterPlanId)
     )
 
     const nodes = templates.map((tpl) => {
@@ -318,7 +316,7 @@ export default function TransactionsPage() {
       .map((p) => ({ value: p.id, title: planLabel(p), children: [] }))
 
     return [...nodes, ...standalone]
-  }, [allPlans])
+  }, [allPlans, filterPlanId])
 
   function handlePlanSelect(planId: string | undefined) {
     setFilterPlanId(planId)
@@ -361,22 +359,34 @@ export default function TransactionsPage() {
   useEffect(() => {
     if (!filterPlanId) {
       setBudgetOptions([])
-      if (!initialPlanFetch.current) setFilterBudgetId(undefined)
-      initialPlanFetch.current = false
       return
     }
     apiClient
       .get<BudgetOption[]>('/api/budgets', { params: { planId: filterPlanId } })
       .then((res) => setBudgetOptions(res.data))
       .catch(() => setBudgetOptions([]))
-    initialPlanFetch.current = false
+  }, [filterPlanId])
+
+  // Date range of the plan the list is filtered by (via plan or budget)
+  useEffect(() => {
+    let cancelled = false
+    setPlanRange(null)
+    async function load() {
+      if (!filterPlanId) return
+      const { startDate, endDate } = (await apiClient.get<{ startDate: string | null; endDate: string | null }>(`/api/plans/${filterPlanId}`)).data
+      if (cancelled || !startDate) return
+      const start = dayjs(startDate.slice(0, 10))
+      setPlanRange({ start, end: endDate ? dayjs(endDate.slice(0, 10)) : start })
+    }
+    load().catch(() => {})
+    return () => { cancelled = true }
   }, [filterPlanId])
 
   // budgetId takes precedence — no need to also send planId
   const apiPlanId = filterBudgetId ? undefined : filterPlanId
   const apiBudgetId = filterBudgetId
-  const customFrom = customRange?.[0]?.toDate()
-  const customTo = customRange?.[1]?.toDate()
+  const customFrom = useMemo(() => customRange?.[0]?.toDate(), [customRange])
+  const customTo = useMemo(() => customRange?.[1]?.toDate(), [customRange])
 
   useEffect(() => {
     let cancelled = false
@@ -483,16 +493,12 @@ export default function TransactionsPage() {
     },
   ], [apiPlanId, apiBudgetId])
 
-  const contextTitle = ctxBudgetName ? `Budget: ${ctxBudgetName}` : ctxPlanName ? `Plan: ${ctxPlanName}` : null
-  const showPlanBudgetFilters = !ctxBudgetId
-
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       {/* Header */}
       <Row justify="space-between" align="middle">
         <Col>
           <Title level={4} style={{ margin: 0 }}>Transactions</Title>
-          {contextTitle && <Text type="secondary">{contextTitle}</Text>}
         </Col>
         <Col>
           <Segmented
@@ -558,22 +564,20 @@ export default function TransactionsPage() {
 
       {/* Filter row */}
       <Row gutter={[8, 8]} align="middle">
-        {showPlanBudgetFilters && (
-          <Col>
-            <TreeSelect
-              placeholder="All plans"
-              allowClear
-              style={{ minWidth: 220 }}
-              value={filterPlanId}
-              onChange={(v) => handlePlanSelect(v)}
-              treeData={planTreeData}
-              showSearch
-              treeNodeFilterProp="title"
-              popupMatchSelectWidth={320}
-            />
-          </Col>
-        )}
-        {showPlanBudgetFilters && filterPlanId && budgetOptions.length > 0 && (
+        <Col>
+          <TreeSelect
+            placeholder="All plans"
+            allowClear
+            style={{ minWidth: 220 }}
+            value={filterPlanId}
+            onChange={(v) => handlePlanSelect(v)}
+            treeData={planTreeData}
+            showSearch
+            treeNodeFilterProp="title"
+            popupMatchSelectWidth={320}
+          />
+        </Col>
+        {filterPlanId && budgetOptions.length > 0 && (
           <Col>
             <Select
               placeholder="All budgets"
