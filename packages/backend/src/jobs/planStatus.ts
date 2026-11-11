@@ -1,5 +1,5 @@
 import db from '../db.js'
-import { freezeInheritedValues } from '../services/freezeInheritedValues.js'
+import { completePlanBudgets, freezeInheritedValues } from '../services/freezeInheritedValues.js'
 
 const SYNC_INTERVAL_MS = 15 * 60 * 1000
 const ADVISORY_LOCK_ID = 727_001
@@ -25,7 +25,7 @@ export async function syncPlanStatuses(): Promise<SyncResult | null> {
     // Completion first, so an already-finished scheduled plan skips Active
     const completedRows = await tx.$queryRaw<{ id: string }[]>`
       UPDATE "Plan" p
-      SET "statusCode" = 3, "updatedAt" = now()
+      SET "statusCode" = 3, "stateCode" = 1, "updatedAt" = now()
       FROM "User" u
       WHERE p."ownerId" = u."id"
         AND p."isTemplate" = false
@@ -34,9 +34,10 @@ export async function syncPlanStatuses(): Promise<SyncResult | null> {
         AND p."endDate" < (now() AT TIME ZONE COALESCE(u."timezone", ${FALLBACK_COMPLETE_TZ}))::date
       RETURNING p."id"`
     const completed = completedRows.length
+    await completePlanBudgets(tx, completedRows.map((r) => r.id))
     await freezeInheritedValues(tx, completedRows.map((r) => r.id))
 
-    const activated = await tx.$executeRaw`
+    const activatedRows = await tx.$queryRaw<{ id: string }[]>`
       UPDATE "Plan" p
       SET "statusCode" = 1, "updatedAt" = now()
       FROM "User" u
@@ -46,7 +47,18 @@ export async function syncPlanStatuses(): Promise<SyncResult | null> {
         AND p."startDate" IS NOT NULL
         AND p."endDate" IS NOT NULL
         AND p."startDate" <= (now() AT TIME ZONE COALESCE(u."timezone", ${FALLBACK_ACTIVATE_TZ}))::date
-        AND p."endDate" >= (now() AT TIME ZONE COALESCE(u."timezone", ${FALLBACK_ACTIVATE_TZ}))::date`
+        AND p."endDate" >= (now() AT TIME ZONE COALESCE(u."timezone", ${FALLBACK_ACTIVATE_TZ}))::date
+      RETURNING p."id"`
+    const activated = activatedRows.length
+    if (activated > 0) {
+      const planIds = activatedRows.map((r) => r.id)
+      const budgets = { planId: { in: planIds }, statusCode: 2 }
+      await tx.transaction.updateMany({
+        where: { statusCode: 2, OR: [{ planId: { in: planIds } }, { budget: budgets }] },
+        data: { statusCode: 1 },
+      })
+      await tx.budget.updateMany({ where: budgets, data: { statusCode: 1 } })
+    }
 
     return { completed, activated }
   })
@@ -73,7 +85,11 @@ export function startPlanStatusScheduler() {
 async function backfillCompletedPlans() {
   try {
     const rows = await db.plan.findMany({ where: { statusCode: 3, isTemplate: false }, select: { id: true } })
-    await db.$transaction((tx) => freezeInheritedValues(tx, rows.map((r) => r.id)))
+    await db.$transaction(async (tx) => {
+      await tx.plan.updateMany({ where: { statusCode: 3, isTemplate: false, stateCode: 0 }, data: { stateCode: 1 } })
+      await completePlanBudgets(tx, rows.map((r) => r.id))
+      await freezeInheritedValues(tx, rows.map((r) => r.id))
+    })
   } catch (err) {
     console.error('[plan-status] backfill failed', err)
   }

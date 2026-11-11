@@ -1,6 +1,15 @@
 import type { Prisma } from '@prisma/client'
 import { isRecurringInterval, withPeriodSuffix } from './planLabel.js'
 
+/** Marks all budgets of the given (just completed) plans as Completed + Inactive. */
+export async function completePlanBudgets(client: Prisma.TransactionClient, planIds: string[]): Promise<void> {
+  if (planIds.length === 0) return
+  await client.budget.updateMany({
+    where: { planId: { in: planIds }, OR: [{ statusCode: { not: 3 } }, { stateCode: { not: 1 } }] },
+    data: { statusCode: 3, stateCode: 1 },
+  })
+}
+
 /**
  * Copies template-inherited values (null in the instance) into the given plans, their budgets and
  * transactions, so later template edits no longer change them. Recurring plans also get their period
@@ -13,12 +22,16 @@ export async function freezeInheritedValues(client: Prisma.TransactionClient, pl
     UPDATE "Plan" p
     SET "name" = COALESCE(p."name", t."name"),
         "defaultAccountId" = COALESCE(p."defaultAccountId", t."defaultAccountId"),
+        "recurrenceConfig" = COALESCE(p."recurrenceConfig", t."recurrenceConfig"),
+        "intervalType" = t."intervalType",
         "updatedAt" = now()
     FROM "Plan" t
     WHERE p."templateId" = t."id"
       AND p."id" = ANY(${planIds}::text[])
       AND ((p."name" IS NULL AND t."name" IS NOT NULL)
-        OR (p."defaultAccountId" IS NULL AND t."defaultAccountId" IS NOT NULL))`
+        OR (p."defaultAccountId" IS NULL AND t."defaultAccountId" IS NOT NULL)
+        OR (p."recurrenceConfig" IS NULL AND t."recurrenceConfig" IS NOT NULL)
+        OR p."intervalType" IS DISTINCT FROM t."intervalType")`
 
   const recurring = await client.plan.findMany({
     where: { id: { in: planIds }, isTemplate: false, startDate: { not: null } },

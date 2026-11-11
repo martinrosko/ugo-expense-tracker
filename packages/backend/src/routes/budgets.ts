@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
+import { propagateBudgetCreated, removeTemplateBudget } from '../services/templateSync.js'
 
 export const budgetsRouter = Router()
 
@@ -53,8 +54,12 @@ budgetsRouter.post('/', async (req: AuthenticatedRequest, res) => {
   // Verify the plan belongs to this user
   const plan = await db.plan.findFirst({ where: { id: planId, ownerId: req.user!.sub } })
   if (!plan) { res.status(403).json({ error: 'Forbidden' }); return }
-  const budget = await db.budget.create({
-    data: { ...(id ? { id } : {}), name, amount, planId, defaultAccountId, templateId, stateCode, statusCode },
+  const budget = await db.$transaction(async (tx) => {
+    const created = await tx.budget.create({
+      data: { ...(id ? { id } : {}), name, amount, planId, defaultAccountId, templateId, stateCode, statusCode },
+    })
+    await propagateBudgetCreated(tx, created)
+    return created
   })
   res.status(201).json(budget)
 })
@@ -81,6 +86,16 @@ budgetsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
     where: { id, plan: { ownerId: req.user!.sub } },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  await db.budget.delete({ where: { id } })
+  const deleted = await db.$transaction(async (tx) => {
+    const plan = await tx.plan.findUnique({ where: { id: existing.planId }, select: { isTemplate: true } })
+    if (plan?.isTemplate) await removeTemplateBudget(tx, existing)
+    const own = { budgetId: id }
+    if (await tx.transaction.count({ where: { ...own, executedOn: { not: null } } }) > 0) return false
+    await tx.transactionTag.deleteMany({ where: { transaction: own } })
+    await tx.transaction.deleteMany({ where: own })
+    await tx.budget.delete({ where: { id } })
+    return true
+  })
+  if (!deleted) { res.status(409).json({ error: 'Budget has executed transactions and cannot be deleted' }); return }
   res.status(204).end()
 })

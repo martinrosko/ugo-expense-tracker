@@ -1,13 +1,15 @@
 import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
-import { freezeInheritedValues } from '../services/freezeInheritedValues.js'
+import { completePlanBudgets, freezeInheritedValues } from '../services/freezeInheritedValues.js'
+import { deletePlanTree } from '../services/deletePlan.js'
+import { activateDraft, changeRecurrence, getRecurrenceInfo, RecurrenceError } from '../services/recurrence.js'
 
 export const plansRouter = Router()
 
-// GET /api/plans?from=ISO&to=ISO&detailed=true
+// GET /api/plans?from=ISO&to=ISO&detailed=true&status=1&templateId=xxx&isTemplate=true
 plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
-  const { from, to, detailed, status } = req.query
+  const { from, to, detailed, status, templateId, isTemplate } = req.query
   const ownerId = req.user!.sub
 
   // For @db.Date columns, use date-only strings to avoid timestamp/timezone mismatches
@@ -25,7 +27,11 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
       }
     : {}
 
-  const statusWhere = status !== undefined ? { statusCode: parseInt(String(status), 10) } : {}
+  const statusWhere = {
+    ...(status !== undefined ? { statusCode: parseInt(String(status), 10) } : {}),
+    ...(templateId ? { templateId: String(templateId) } : {}),
+    ...(isTemplate !== undefined ? { isTemplate: isTemplate === 'true' } : {}),
+  }
 
   if (detailed === 'true') {
     const plans = await db.plan.findMany({
@@ -37,7 +43,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
             template: { select: { name: true, amount: true } },
             transactions: {
               select: {
-                id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true,
+                id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true, templateId: true,
                 fromAccount: { select: { type: true } },
                 toAccount: { select: { type: true } },
                 template: { select: { name: true, plannedAmount: true, dueDateConfig: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
@@ -49,7 +55,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
         transactions: {
           where: { budgetId: null },
           select: {
-            id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true,
+            id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true, templateId: true,
             fromAccount: { select: { type: true } },
             toAccount: { select: { type: true } },
             template: { select: { name: true, plannedAmount: true, dueDateConfig: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
@@ -143,7 +149,7 @@ plansRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
 plansRouter.post('/', async (req: AuthenticatedRequest, res) => {
   const { id, name, startDate, endDate, intervalType, isTemplate, templateId, defaultAccountId, recurrenceConfig, stateCode, statusCode } = req.body
   const plan = await db.plan.create({
-    data: { ...(id ? { id } : {}), name, startDate: startDate ? new Date(startDate) : null, endDate: endDate ? new Date(endDate) : null, intervalType, isTemplate, templateId, defaultAccountId, recurrenceConfig, stateCode, statusCode, ownerId: req.user!.sub },
+    data: { ...(id ? { id } : {}), name, startDate: startDate ? new Date(startDate) : null, endDate: endDate ? new Date(endDate) : null, intervalType, isTemplate, templateId, defaultAccountId, recurrenceConfig, stateCode, statusCode: statusCode ?? (isTemplate ? 0 : undefined), ownerId: req.user!.sub },
   })
   res.status(201).json(plan)
 })
@@ -173,10 +179,47 @@ plansRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
       },
     })
     // Completed history must not change when the template does
-    if (updated.statusCode === 3 && existing.statusCode !== 3) await freezeInheritedValues(tx, [id])
+    if (updated.statusCode === 3 && existing.statusCode !== 3) {
+      if (updated.stateCode !== 1) await tx.plan.update({ where: { id }, data: { stateCode: 1 } })
+      await completePlanBudgets(tx, [id])
+      await freezeInheritedValues(tx, [id])
+    }
     return tx.plan.findUniqueOrThrow({ where: { id } })
   })
   res.json(plan)
+})
+
+// GET /api/plans/:id/recurrence  (id may be a recurring template or one of its instances)
+plansRouter.get('/:id/recurrence', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    res.json(await getRecurrenceInfo(String(req.params.id), req.user!.sub))
+  } catch (err) {
+    if (err instanceof RecurrenceError) { res.status(err.status).json({ error: err.message }); return }
+    next(err)
+  }
+})
+
+// POST /api/plans/:id/recurrence  body: { mode: 'count', count } | { mode: 'until', until: 'YYYY-MM-DD' }
+plansRouter.post('/:id/recurrence', async (req: AuthenticatedRequest, res, next) => {
+  const { mode, count, until } = req.body ?? {}
+  if (mode !== 'count' && mode !== 'until') { res.status(400).json({ error: 'mode must be "count" or "until"' }); return }
+  try {
+    const change = mode === 'count' ? { mode, count: Number(count) } as const : { mode, until: String(until) } as const
+    res.json(await changeRecurrence(String(req.params.id), req.user!.sub, change))
+  } catch (err) {
+    if (err instanceof RecurrenceError) { res.status(err.status).json({ error: err.message }); return }
+    next(err)
+  }
+})
+
+// POST /api/plans/:id/activate  Draft -> Active/Scheduled; see activateDraft for the body
+plansRouter.post('/:id/activate', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    res.json(await activateDraft(String(req.params.id), req.user!.sub, req.body ?? {}))
+  } catch (err) {
+    if (err instanceof RecurrenceError) { res.status(err.status).json({ error: err.message }); return }
+    next(err)
+  }
 })
 
 // DELETE /api/plans/:id
@@ -193,14 +236,7 @@ plansRouter.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
         const instances = await tx.plan.findMany({ where: { templateId: id }, select: { id: true } })
         await freezeInheritedValues(tx, instances.map((i) => i.id))
       }
-      const budgetIds = (await tx.budget.findMany({ where: { planId: id }, select: { id: true } })).map((b) => b.id)
-      const ownTransactions = { OR: [{ planId: id }, { budgetId: { in: budgetIds } }] }
-      if (await tx.transaction.count({ where: { ...ownTransactions, executedOn: { not: null } } }) > 0) return false
-      await tx.transactionTag.deleteMany({ where: { transaction: ownTransactions } })
-      await tx.transaction.deleteMany({ where: ownTransactions })
-      await tx.budget.deleteMany({ where: { planId: id } })
-      await tx.plan.delete({ where: { id } })
-      return true
+      return deletePlanTree(tx, id)
     })
     if (!deleted) { res.status(409).json({ error: 'Plan has executed transactions and cannot be deleted' }); return }
     res.status(204).end()

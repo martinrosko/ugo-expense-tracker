@@ -14,6 +14,10 @@
     "docker:up": "docker compose up -d",
     "docker:up:dev": "docker compose up -d postgres keycloak",
     "docker:down": "docker compose down",
+    "start:all": "npm run docker:up:dev && concurrently -k -n backend,frontend -c blue,green \"npm:backend:dev\" \"npm:dev\"",
     "docker:build": "docker compose build"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7"
   }
 }

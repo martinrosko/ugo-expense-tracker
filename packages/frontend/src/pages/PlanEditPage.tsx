@@ -899,7 +899,7 @@ export default function PlanEditPage() {
         <Title level={4} style={{ margin: 0 }}>{effectiveName}</Title>
         <Tag color="purple">{plan.intervalType}</Tag>
         {plan.isTemplate
-          ? <Tag color="volcano">TEMPLATE</Tag>
+          ? <><Tag color="volcano">TEMPLATE</Tag><Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag></>
           : <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>}
         {plan.templateId && <Tag style={{ fontSize: 11 }}>Instance</Tag>}
         {hasUnsavedChanges && <Tag color="gold">Unsaved changes</Tag>}

@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
+import { isTemplateTransaction, propagateTransactionCreated, removeTemplateTransaction } from '../services/templateSync.js'
 
 export const transactionsRouter = Router()
 
@@ -91,29 +92,33 @@ transactionsRouter.post('/', async (req: AuthenticatedRequest, res) => {
     if (!plan) { res.status(403).json({ error: 'Forbidden' }); return }
   }
 
-  const tx = await db.transaction.create({
-    data: {
-      ...(id ? { id } : {}),
-      name,
-      amount,
-      plannedAmount,
-      plannedOn: plannedOn ? new Date(plannedOn) : undefined,
-      executedOn: executedOn ? new Date(executedOn) : undefined,
-      dueDateConfig,
-      type,
-      budgetId,
-      planId,
-      bankTicketId,
-      fromAccountId,
-      toAccountId,
-      templateId,
-      stateCode,
-      statusCode,
-      tags: tagIds?.length
-        ? { create: tagIds.map((tagId: string) => ({ tagId })) }
-        : undefined,
-    },
-    include: { tags: { include: { tag: true } } },
+  const tx = await db.$transaction(async (client) => {
+    const created = await client.transaction.create({
+      data: {
+        ...(id ? { id } : {}),
+        name,
+        amount,
+        plannedAmount,
+        plannedOn: plannedOn ? new Date(plannedOn) : undefined,
+        executedOn: executedOn ? new Date(executedOn) : undefined,
+        dueDateConfig,
+        type,
+        budgetId,
+        planId,
+        bankTicketId,
+        fromAccountId,
+        toAccountId,
+        templateId,
+        stateCode,
+        statusCode,
+        tags: tagIds?.length
+          ? { create: tagIds.map((tagId: string) => ({ tagId })) }
+          : undefined,
+      },
+      include: { tags: { include: { tag: true } } },
+    })
+    await propagateTransactionCreated(client, created)
+    return created
   })
   res.status(201).json(tx)
 })
@@ -155,7 +160,11 @@ transactionsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
     where: { id, ...ownerFilter(req.user!.sub) },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  await db.transaction.delete({ where: { id } })
+  await db.$transaction(async (tx) => {
+    if (await isTemplateTransaction(tx, existing)) await removeTemplateTransaction(tx, existing)
+    await tx.transactionTag.deleteMany({ where: { transactionId: id } })
+    await tx.transaction.delete({ where: { id } })
+  })
   res.status(204).end()
 })
 

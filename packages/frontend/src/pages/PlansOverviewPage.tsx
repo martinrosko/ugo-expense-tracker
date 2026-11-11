@@ -23,13 +23,15 @@ import {
   Input,
   Select,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
 import apiClient from '../api/apiClient'
 import { computePlannedOn } from '../features/helpers'
 import { planLabel } from '../features/planLabel'
+import ChangeRecurrenceModal from '../components/ChangeRecurrenceModal'
+import ActivatePlanModal from '../components/ActivatePlanModal'
 
 dayjs.extend(isoWeek)
 
@@ -46,6 +48,7 @@ type TxSummary = {
   dueDateConfig?: string | null
   executedOn: string | null
   type: 'TRANSACTION' | 'BALANCE'
+  templateId?: string | null
   fromAccount?: { type: string } | null
   toAccount?: { type: string } | null
 }
@@ -75,7 +78,7 @@ type PlanDetailed = {
 
 // ─── Period helpers ───────────────────────────────────────────────────────────
 
-type PeriodMode = 'active' | 'week' | 'month' | 'year' | 'templates'
+type PeriodMode = 'active' | 'week' | 'month' | 'year' | 'template' | 'templates'
 type PeriodKind = 'week' | 'month' | 'year'
 
 function isPeriodKind(m: PeriodMode): m is PeriodKind {
@@ -84,6 +87,7 @@ function isPeriodKind(m: PeriodMode): m is PeriodKind {
 
 type PlansOverviewState = {
   mode?: PeriodMode
+  templateId?: string | null // template shown in 'template' mode
   offset?: number
   splitView?: boolean
   expandedTemplateIds?: string[]
@@ -130,7 +134,7 @@ function computeOffset(mode: PeriodKind, picked: Dayjs): number {
   return Math.round((pickedMonday.getTime() - currentMonday.getTime()) / (7 * 86400000))
 }
 
-function getPeriod(mode: Exclude<PeriodMode, 'active'>, offset: number): { from: Date; to: Date; label: string } {
+function getPeriod(mode: PeriodKind, offset: number): { from: Date; to: Date; label: string } {
   const now = new Date()
   if (mode === 'week') {
     const dow = (now.getDay() + 6) % 7 // Mon=0 … Sun=6
@@ -279,12 +283,16 @@ function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: st
   }
   const _actS = splitByKind(txs, 'amount', { executedOnly: true })
   const _plnS = splitByKind(txs, 'plannedAmount')
+  // Pending transactions from a template are committed spending on top of the envelope
+  const pendingTpl = txs.filter((t) => t.executedOn === null && t.templateId)
+  const pendingTplSigned = pendingTpl.reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0)
+  const pendingTplSplit = splitByKind(pendingTpl, 'plannedAmount')
   return {
-    planned, actual, reserved: reservation,
+    planned, actual, reserved: reservation + pendingTplSigned,
     incPlanned: _plnS.inc, incActual: _actS.inc,
-    incReserved: reservation > 0 ? reservation : 0,
+    incReserved: (reservation > 0 ? reservation : 0) + pendingTplSplit.inc,
     expPlanned: Math.abs(budgetEnvelope) + _plnS.exp, expActual: _actS.exp,
-    expReserved: reservation < 0 ? Math.abs(reservation) : 0,
+    expReserved: (reservation < 0 ? Math.abs(reservation) : 0) + pendingTplSplit.exp,
   }
 }
 
@@ -514,7 +522,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
   )
 }
 
-function PlanHeader({ plan, stats, splitView, onDiscard }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean; onDiscard?: (plan: PlanDetailed) => void }) {
+function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void }) {
   const navigate = useNavigate()
   const dateRange = [plan.startDate, plan.endDate]
     .map((d) => (d ? new Date(d).toLocaleDateString('sk-SK') : ''))
@@ -551,6 +559,31 @@ function PlanHeader({ plan, stats, splitView, onDiscard }: { plan: PlanDetailed;
               <Button size="small" type="text" danger icon={<StopOutlined />} onClick={(e) => e.stopPropagation()} />
             </Tooltip>
           </Popconfirm>
+        )}
+        {plan.statusCode === 0 && !plan.isTemplate && !plan.templateId && plan.intervalType === 'ONE_TIME' && onActivate && (
+          <Tooltip title="Activate plan">
+            <Button
+              size="small" type="text" icon={<PlayCircleOutlined />}
+              onClick={(e) => { e.stopPropagation(); onActivate(plan) }}
+            />
+          </Tooltip>
+        )}
+        {plan.templateId && onShowOccurrences && plan.templateIntervalType && plan.templateIntervalType !== 'ONE_TIME' && (
+          <Tooltip title="Show all occurrences">
+            <Button
+              size="small" type="text" icon={<HistoryOutlined />}
+              onClick={(e) => { e.stopPropagation(); onShowOccurrences(plan) }}
+            />
+          </Tooltip>
+        )}
+        {(plan.statusCode === 1 || plan.statusCode === 2) && plan.templateId && onChangeRecurrence
+          && plan.templateIntervalType && plan.templateIntervalType !== 'ONE_TIME' && (
+          <Tooltip title="Change recurrence">
+            <Button
+              size="small" type="text" icon={<SyncOutlined />}
+              onClick={(e) => { e.stopPropagation(); onChangeRecurrence(plan) }}
+            />
+          </Tooltip>
         )}
         {plan.statusCode !== 3 && (
           <Tooltip title="Edit plan">
@@ -662,11 +695,16 @@ export default function PlansOverviewPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createForm] = Form.useForm<{ name: string; intervalType: string }>()
+  const [recurrencePlanId, setRecurrencePlanId] = useState<string | null>(null)
+  const [activatePlan, setActivatePlan] = useState<PlanDetailed | null>(null)
+  const [templateId, setTemplateId] = useState<string | null>(returnState.templateId ?? null)
+  const [templates, setTemplates] = useState<{ id: string; name: string }[]>([])
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
-    const state: PlansOverviewState = { mode, offset, splitView, expandedTemplateIds, expandedPlanIds, savedDates }
+    const state: PlansOverviewState = { mode, templateId, offset, splitView, expandedTemplateIds, expandedPlanIds, savedDates }
     sessionStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state))
-  }, [mode, offset, splitView, expandedTemplateIds, expandedPlanIds, savedDates])
+  }, [mode, templateId, offset, splitView, expandedTemplateIds, expandedPlanIds, savedDates])
 
   function changeExpanded(groupPlans: PlanDetailed[], keys: string | string[], defaults: string[]) {
     const groupIds = new Set(groupPlans.map((p) => p.id))
@@ -682,6 +720,7 @@ export default function PlansOverviewPage() {
         name: values.name.trim(),
         intervalType: values.intervalType,
         isTemplate: true,
+        statusCode: 0,
       })
       setCreateOpen(false)
       navigate(`/plans/${res.data.id}/edit`, {
@@ -710,9 +749,39 @@ export default function PlansOverviewPage() {
   }
 
   const period = useMemo(
-    () => mode !== 'active' && mode !== 'templates' ? getPeriod(mode, offset) : null,
+    () => isPeriodKind(mode) ? getPeriod(mode, offset) : null,
     [mode, offset]
   )
+
+  function showTemplate(plan: PlanDetailed) {
+    handleModeChange('template')
+    setTemplateId(plan.isTemplate ? plan.id : plan.templateId ?? null)
+  }
+
+  function cycleTemplate(step: number) {
+    if (templates.length === 0) return
+    const index = templates.findIndex((t) => t.id === templateId)
+    setTemplateId(templates[(index + step + templates.length) % templates.length].id)
+  }
+
+  // Active recurring templates the user can cycle through in template mode
+  useEffect(() => {
+    if (mode !== 'template') return
+    let cancelled = false
+    apiClient
+      .get<PlanDetailed[]>('/api/plans', { params: { status: '1', isTemplate: 'true' } })
+      .then((res) => {
+        if (cancelled) return
+        const list = res.data
+          .filter((p) => p.intervalType !== 'ONE_TIME')
+          .map((p) => ({ id: p.id, name: p.name ?? '(unnamed)' }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        setTemplates(list)
+        setTemplateId((current) => (current && list.some((t) => t.id === current) ? current : list[0]?.id ?? null))
+      })
+      .catch(() => { if (!cancelled) setTemplates([]) })
+    return () => { cancelled = true }
+  }, [mode, reloadKey])
 
   function handleModeChange(next: PeriodMode) {
     const saved = { ...savedDates }
@@ -741,7 +810,10 @@ export default function PlansOverviewPage() {
     setLoading(true)
     setError(null)
     const params: Record<string, string> = { detailed: 'true' }
-    if (mode === 'templates') {
+    if (mode === 'template') {
+      if (!templateId) { setPlans([]); setLoading(false); return }
+      params.templateId = templateId
+    } else if (mode === 'templates') {
       // no date filtering — fetch all and keep templates
     } else if (mode === 'active') {
       const today = toLocalDateStr(new Date())
@@ -770,12 +842,13 @@ export default function PlansOverviewPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [mode, period])
+  }, [mode, period, templateId, reloadKey])
 
   // Groups for period view
   const groupedByStatus = useMemo(() => {
     if (mode === 'active' || mode === 'templates') return null
-    return STATUS_GROUPS
+    const groups = mode === 'template' ? [...STATUS_GROUPS, { key: '4', label: 'Cancelled Plans', codes: [4] }] : STATUS_GROUPS
+    return groups
       .map((g) => ({ ...g, plans: plans.filter((p) => g.codes.includes(p.statusCode)) }))
       .filter((g) => g.plans.length > 0)
   }, [mode, plans])
@@ -797,7 +870,7 @@ export default function PlansOverviewPage() {
     const stats = planStats(plan, from, to)
     return {
       key: plan.id,
-      label: <PlanHeader plan={plan} stats={stats} splitView={splitView} onDiscard={discardPlan} />,
+      label: <PlanHeader plan={plan} stats={stats} splitView={splitView} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} />,
       children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} splitView={splitView} />,
     }
   }), [period, splitView, discardPlan])
@@ -811,6 +884,16 @@ export default function PlansOverviewPage() {
   return (
     <Space orientation="vertical" style={{ width: '100%' }} size="large">
       {contextHolder}
+      <ChangeRecurrenceModal
+        planId={recurrencePlanId}
+        onClose={() => setRecurrencePlanId(null)}
+        onChanged={() => setReloadKey((k) => k + 1)}
+      />
+      <ActivatePlanModal
+        plan={activatePlan}
+        onClose={() => setActivatePlan(null)}
+        onActivated={() => setReloadKey((k) => k + 1)}
+      />
       <Modal
         open={createOpen}
         title="New plan template"
@@ -849,10 +932,31 @@ export default function PlansOverviewPage() {
             <Radio.Button value="week">Week</Radio.Button>
             <Radio.Button value="month">Month</Radio.Button>
             <Radio.Button value="year">Year</Radio.Button>
+            <Radio.Button value="template">Template</Radio.Button>
             <Radio.Button value="templates">Templates</Radio.Button>
           </Radio.Group>
         </Col>
-        {mode !== 'active' && mode !== 'templates' && period && (
+        {mode === 'template' && (
+          <Col>
+            <Space>
+              <Button icon={<LeftOutlined />} disabled={templates.length < 2} onClick={() => cycleTemplate(-1)} />
+              <Text strong style={{ display: 'inline-block', minWidth: 180, textAlign: 'center', fontSize: 16 }}>
+                {templates.find((t) => t.id === templateId)?.name ?? '—'}
+              </Text>
+              <Button icon={<RightOutlined />} disabled={templates.length < 2} onClick={() => cycleTemplate(1)} />
+              <Tooltip title="Edit template">
+                <Button
+                  icon={<EditOutlined />}
+                  disabled={!templateId}
+                  onClick={() => navigate(`/plans/${templateId}/edit`, {
+                    state: { returnState: { mode, templateId, offset, splitView, expandedTemplateIds } },
+                  })}
+                />
+              </Tooltip>
+            </Space>
+          </Col>
+        )}
+        {isPeriodKind(mode) && period && (
           <Col>
             <Space>
               <Button icon={<LeftOutlined />} onClick={() => setOffset((o) => o - 1)} />
@@ -867,7 +971,7 @@ export default function PlansOverviewPage() {
                     ? 'MMMM YYYY'
                     : 'YYYY'
                 }
-                onChange={(d) => { if (d) setOffset(computeOffset(mode as Exclude<PeriodMode, 'active' | 'templates'>, d)) }}
+                onChange={(d) => { if (d) setOffset(computeOffset(mode as PeriodKind, d)) }}
                 style={{ width: 200, textAlign: 'center', fontWeight: 600, fontSize: 16 }}
                 variant="borderless"
               />
@@ -915,6 +1019,31 @@ export default function PlansOverviewPage() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <Text strong style={{ flex: 1 }}>{plan.name ?? '(unnamed)'}</Text>
                             <Tag color="purple">{plan.intervalType}</Tag>
+                            <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
+                            {plan.statusCode !== 0 && plan.intervalType !== 'ONE_TIME' && (
+                              <Tooltip title="Show all occurrences">
+                                <Button
+                                  size="small" type="text" icon={<HistoryOutlined />}
+                                  onClick={(e) => { e.stopPropagation(); showTemplate(plan) }}
+                                />
+                              </Tooltip>
+                            )}
+                            {plan.statusCode === 0 && (
+                              <Tooltip title="Activate">
+                                <Button
+                                  size="small" type="text" icon={<PlayCircleOutlined />}
+                                  onClick={(e) => { e.stopPropagation(); setActivatePlan(plan) }}
+                                />
+                              </Tooltip>
+                            )}
+                            {plan.statusCode === 1 && plan.intervalType !== 'ONE_TIME' && (
+                              <Tooltip title="Change recurrence">
+                                <Button
+                                  size="small" type="text" icon={<SyncOutlined />}
+                                  onClick={(e) => { e.stopPropagation(); setRecurrencePlanId(plan.id) }}
+                                />
+                              </Tooltip>
+                            )}
                             <Tooltip title="Edit template">
                               <Button
                                 size="small" type="text" icon={<EditOutlined />}
@@ -1008,7 +1137,7 @@ export default function PlansOverviewPage() {
                     />
                   </div>
                 ))
-              : <Text type="secondary">No plans found for this period.</Text>
+              : <Text type="secondary">{mode === 'template' ? 'No occurrences found for this template.' : 'No plans found for this period.'}</Text>
           )}
 
           {/* Period summary (period views only) */}
