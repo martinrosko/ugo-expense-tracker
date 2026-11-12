@@ -120,10 +120,10 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
 plansRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const txSelect = {
-    id: true, name: true, plannedAmount: true, fromAccountId: true, toAccountId: true,
+    id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, fromAccountId: true, toAccountId: true,
     planId: true, budgetId: true, type: true, stateCode: true, statusCode: true, templateId: true,
     dueDateConfig: true,
-    template: { select: { name: true, plannedAmount: true, fromAccountId: true, toAccountId: true, dueDateConfig: true } },
+    template: { select: { name: true, plannedAmount: true, plannedOn: true, fromAccountId: true, toAccountId: true, dueDateConfig: true } },
     fromAccount: { select: { id: true, name: true, type: true } },
     toAccount: { select: { id: true, name: true, type: true } },
   }

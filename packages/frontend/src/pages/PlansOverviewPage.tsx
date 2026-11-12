@@ -16,14 +16,13 @@ import {
   DatePicker,
   Tooltip,
   Switch,
-  Popconfirm,
   message,
   Modal,
   Form,
   Input,
   Select,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined, EyeOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -32,6 +31,9 @@ import { computePlannedOn } from '../features/helpers'
 import { planLabel } from '../features/planLabel'
 import ChangeRecurrenceModal from '../components/ChangeRecurrenceModal'
 import ActivatePlanModal from '../components/ActivatePlanModal'
+import RowActions, { type RowAction } from '../components/RowActions'
+import { usePlanTxActions, type TxActionContext } from '../features/usePlanTxActions'
+import LogTransactionModal from '../components/LogTransactionModal'
 
 dayjs.extend(isoWeek)
 
@@ -58,6 +60,7 @@ type BudgetWithTx = {
   name: string | null
   amount: string | null
   planId: string
+  statusCode?: number
   transactions: TxSummary[]
 }
 
@@ -96,6 +99,8 @@ type PlansOverviewState = {
 }
 
 const STATE_STORAGE_KEY = 'plansOverviewState'
+const INITIAL_VISIBLE = 5
+const LOAD_MORE_STEP = 10
 
 function loadSavedState(): PlansOverviewState {
   try {
@@ -395,14 +400,81 @@ function SplitAmount({ inc, exp }: { inc: number; exp: number }) {
   )
 }
 
-type BudgetRow = { key: string; name: string; planned: number; actual: number; reserved: number; incPlanned: number; incActual: number; incReserved: number; expPlanned: number; expActual: number; expReserved: number; pct: number; rawPct: number; status: 'success' | 'normal' | 'exception'; flipped: boolean }
+type BudgetRow = {
+  key: string; name: string; planned: number; actual: number; reserved: number
+  incPlanned: number; incActual: number; incReserved: number; expPlanned: number; expActual: number; expReserved: number
+  pct: number; rawPct: number; status: 'success' | 'normal' | 'exception'; flipped: boolean
+  /** Budget size (envelope), negative like an expense; null when the budget has none */
+  envelope?: number | null
+  /** Executed transactions that were not planned (no template, no planned amount or due day) */
+  unplanned?: { total: number; inc: number; exp: number }
+  /** Reserved without the pending transactions that are listed as child rows */
+  ownReserved?: { total: number; inc: number; exp: number }
+  children?: TxTreeRow[]
+}
+type TxTreeRow = { key: string; tx: TxSummary; budgetCompleted: boolean }
+type TableRow = BudgetRow | TxTreeRow
+type Amt = { total: number; inc: number; exp: number }
+const ZERO: Amt = { total: 0, inc: 0, exp: 0 }
 
-function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, planEndDate, planId, planName, splitView }: { budgets: BudgetWithTx[]; directTxs?: TxSummary[]; scheduled?: boolean; from?: Date; to?: Date; planStartDate?: string | null; planEndDate?: string | null; planId?: string; planName?: string | null; splitView?: boolean }) {
+const isTxTreeRow = (row: TableRow): row is TxTreeRow => 'tx' in row
+
+const SMALL = { fontSize: 12 } as const
+
+function shortDate(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleDateString('sk-SK', { day: 'numeric', month: 'numeric' }) : '—'
+}
+
+function plannedDateOf(tx: TxSummary, planStartDate?: string | null): string | null {
+  return tx.plannedOn ?? computePlannedOnLabel(tx.dueDateConfig, planStartDate)
+}
+
+/** Pending transactions first (by planned date), then executed ones, newest first; unplanned ones are left out */
+function txChildren(txs: TxSummary[], from: Date | undefined, to: Date | undefined, planStartDate: string | null | undefined, budgetCompleted: boolean): TxTreeRow[] | undefined {
+  const all = txs.filter((t) => t.type === 'TRANSACTION' && isPlannedTx(t))
+  const inRange = from && to ? all.filter((t) => inPeriod(t, from, to, planStartDate)) : all
+  const time = (v: string | null) => (v ? new Date(v).getTime() : Infinity)
+  const pending = inRange.filter((t) => t.executedOn === null).sort((a, b) => time(plannedDateOf(a, planStartDate)) - time(plannedDateOf(b, planStartDate)))
+  const executed = inRange.filter((t) => t.executedOn !== null).sort((a, b) => time(b.executedOn) - time(a.executedOn))
+  const rows = [...pending, ...executed].map((tx) => ({ key: tx.id, tx, budgetCompleted }))
+  return rows.length > 0 ? rows : undefined
+}
+
+const isPlannedTx = (t: TxSummary) => !!t.templateId || t.plannedAmount !== null || !!t.dueDateConfig
+
+/** Reserved amount of pending transactions in the period that match the filter */
+function pendingReserved(txs: TxSummary[], from: Date | undefined, to: Date | undefined, planStartDate: string | null | undefined, match: (t: TxSummary) => boolean) {
+  const pending = txs.filter((t) => t.type === 'TRANSACTION' && t.executedOn === null && match(t) && (!from || !to || inPeriod(t, from, to, planStartDate)))
+  const split = splitByKind(pending, 'plannedAmount')
+  return { total: pending.reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0), inc: split.inc, exp: split.exp }
+}
+
+function withoutAmounts(stats: BudgetStats, pending: { total: number; inc: number; exp: number }) {
+  return { total: stats.reserved - pending.total, inc: stats.incReserved - pending.inc, exp: stats.expReserved - pending.exp }
+}
+
+/** Sum of executed unplanned transactions in the period */
+function unplannedExecuted(txs: TxSummary[], from: Date | undefined, to: Date | undefined, planStartDate: string | null | undefined) {
+  const inRange = txs.filter((t) => t.type === 'TRANSACTION' && t.executedOn !== null && !isPlannedTx(t) && (!from || !to || inPeriod(t, from, to, planStartDate)))
+  const split = splitByKind(inRange, 'amount')
+  return { total: inRange.reduce((s, t) => s + signedAmount(t, t.amount), 0), inc: split.inc, exp: split.exp }
+}
+
+function txSplit(tx: TxSummary, raw: string | null): { inc: number; exp: number } {
+  const kind = txKind(tx)
+  const v = Math.abs(parse(raw))
+  return { inc: kind === 'income' ? v : 0, exp: kind === 'expense' ? v : 0 }
+}
+
+function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, planEndDate, planId, planName, planStatusCode, splitView, txActions }: { budgets: BudgetWithTx[]; directTxs?: TxSummary[]; scheduled?: boolean; from?: Date; to?: Date; planStartDate?: string | null; planEndDate?: string | null; planId?: string; planName?: string | null; planStatusCode?: number; splitView?: boolean; txActions?: (ctx: TxActionContext) => RowAction[] }) {
   const navigate = useNavigate()
+  const [expandedKeys, setExpandedKeys] = useState<string[]>(() => (planStatusCode === 1 ? [...budgets.map((b) => b.id), '__direct__'] : []))
+  // An expanded budget shows its own size, since the rows below carry the amounts; collapsed it shows the totals
+  const isExpanded = (row: BudgetRow) => !!row.children && expandedKeys.includes(row.key)
   const rows: BudgetRow[] = (budgets ?? []).map((b) => {
     const s = budgetStats(b, from, to, planStartDate, planEndDate)
     const ep = execProgress(s)
-    return { key: b.id, name: b.name ?? '—', ...s, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped }
+    return { key: b.id, name: b.name ?? '—', ...s, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped, envelope: b.amount ? -Math.abs(parse(b.amount)) : null, unplanned: unplannedExecuted(b.transactions ?? [], from, to, planStartDate), ownReserved: withoutAmounts(s, pendingReserved(b.transactions ?? [], from, to, planStartDate, (t) => !!t.templateId)), children: txChildren(b.transactions ?? [], from, to, planStartDate, b.statusCode === 3) }
   })
 
   // Add uncategorized row if there are direct plan transactions
@@ -416,85 +488,149 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     const dPlnS = splitByKind(filteredDirect, 'plannedAmount')
     const dResS = splitByKind(filteredDirect, 'plannedAmount', { unexecutedOnly: true })
     const ep = execProgress({ planned, actual, reserved })
-    rows.push({ key: '__direct__', name: 'General', planned, actual, reserved, incPlanned: dPlnS.inc, incActual: dActS.inc, incReserved: dResS.inc, expPlanned: dPlnS.exp, expActual: dActS.exp, expReserved: dResS.exp, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped })
+    rows.push({ key: '__direct__', name: 'General', planned, actual, reserved, incPlanned: dPlnS.inc, incActual: dActS.inc, incReserved: dResS.inc, expPlanned: dPlnS.exp, expActual: dActS.exp, expReserved: dResS.exp, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped, unplanned: unplannedExecuted(directTxs ?? [], from, to, planStartDate), ownReserved: withoutAmounts({ planned, actual, reserved, incPlanned: dPlnS.inc, incActual: dActS.inc, incReserved: dResS.inc, expPlanned: dPlnS.exp, expActual: dActS.exp, expReserved: dResS.exp }, pendingReserved(directTxs ?? [], from, to, planStartDate, () => true)), children: txChildren(directTxs ?? [], from, to, planStartDate, false) })
   }
 
-  // totals row
-  const totalPlanned = rows.reduce((s, r) => s + r.planned, 0)
-  const totalActual = rows.reduce((s, r) => s + r.actual, 0)
-  const totalReserved = rows.reduce((s, r) => s + r.reserved, 0)
-  const totalIncPlanned = rows.reduce((s, r) => s + r.incPlanned, 0)
-  const totalExpPlanned = rows.reduce((s, r) => s + r.expPlanned, 0)
-  const totalIncActual = rows.reduce((s, r) => s + r.incActual, 0)
-  const totalExpActual = rows.reduce((s, r) => s + r.expActual, 0)
-  const totalIncReserved = rows.reduce((s, r) => s + r.incReserved, 0)
-  const totalExpReserved = rows.reduce((s, r) => s + r.expReserved, 0)
+  const sumOf = (pick: (r: BudgetRow) => Amt): Amt => rows.reduce((s, r) => { const a = pick(r); return { total: s.total + a.total, inc: s.inc + a.inc, exp: s.exp + a.exp } }, ZERO)
+  const totalActual = sumOf((r) => ({ total: r.actual, inc: r.incActual, exp: r.expActual }))
+  const totalReserved = sumOf((r) => ({ total: r.reserved, inc: r.incReserved, exp: r.expReserved }))
+  const totalPlanned = sumOf((r) => ({ total: r.planned, inc: r.incPlanned, exp: r.expPlanned }))
+  const plus = (a: Amt, b: Amt): Amt => ({ total: a.total + b.total, inc: a.inc + b.inc, exp: a.exp + b.exp })
+
+  const txAmount = (tx: TxSummary, raw: string | null) => {
+    if (splitView) {
+      const { inc, exp } = txSplit(tx, raw)
+      return <span style={SMALL}><SplitAmount inc={inc} exp={exp} /></span>
+    }
+    const v = signedAmount(tx, raw)
+    return <span style={{ ...SMALL, color: amountColor(v) }}>{fmt(v)}</span>
+  }
+
+  // What a row shows as Actual and Reserved: its own amounts for a transaction, the share not listed below for an expanded budget
+  const shown = (row: TableRow): { actual: Amt; reserved: Amt } => {
+    if (isTxTreeRow(row)) {
+      const t = row.tx
+      if (t.executedOn !== null) {
+        const s = txSplit(t, t.amount)
+        return { actual: { total: signedAmount(t, t.amount), ...s }, reserved: ZERO }
+      }
+      const s = txSplit(t, t.plannedAmount)
+      return { actual: ZERO, reserved: { total: signedAmount(t, t.plannedAmount), ...s } }
+    }
+    if (isExpanded(row)) return { actual: row.unplanned ?? ZERO, reserved: row.ownReserved ?? ZERO }
+    return {
+      actual: { total: row.actual, inc: row.incActual, exp: row.expActual },
+      reserved: { total: row.reserved, inc: row.incReserved, exp: row.expReserved },
+    }
+  }
+
+  const amountCell = (row: TableRow, a: Amt) => {
+    // Child rows and expanded budgets leave empty amounts blank; collapsed budgets always show theirs
+    if ((isTxTreeRow(row) || isExpanded(row)) && a.total === 0 && a.inc === 0 && a.exp === 0) return null
+    const body = splitView ? <SplitAmount inc={a.inc} exp={a.exp} /> : <span style={{ color: amountColor(a.total) }}>{fmt(a.total)}</span>
+    return isTxTreeRow(row) ? <span style={SMALL}>{body}</span> : body
+  }
+
+  const summaryCell = (a: Amt) => (splitView ? <SplitAmount inc={a.inc} exp={a.exp} /> : <span style={{ color: amountColor(a.total) }}>{fmt(a.total)}</span>)
 
   return (
     <div style={{ padding: '0 0px' }}>
-      <Table<BudgetRow>
+      <Table<TableRow>
         dataSource={rows}
         pagination={false}
         size="small"
         rowKey="key"
+        expandable={{ expandedRowKeys: expandedKeys, onExpandedRowsChange: (keys) => setExpandedKeys(keys.map(String)), indentSize: 16 }}
         summary={() => (
           <Table.Summary.Row style={{ fontWeight: 600 }}>
             <Table.Summary.Cell index={0}>Total</Table.Summary.Cell>
-            <Table.Summary.Cell index={1} align="right">
-              {splitView ? <SplitAmount inc={totalIncPlanned} exp={totalExpPlanned} /> : <span style={{ color: amountColor(totalPlanned) }}>{fmt(totalPlanned)}</span>}
-            </Table.Summary.Cell>
             {!scheduled && (
               <>
-                <Table.Summary.Cell index={2} align="right">
-                  {splitView ? <SplitAmount inc={totalIncActual} exp={totalExpActual} /> : <span style={{ color: amountColor(totalActual) }}>{fmt(totalActual)}</span>}
-                </Table.Summary.Cell>
-                <Table.Summary.Cell index={3} align="right">
-                  {splitView ? <SplitAmount inc={totalIncReserved} exp={totalExpReserved} /> : <span style={{ color: amountColor(totalReserved) }}>{fmt(totalReserved)}</span>}
-                </Table.Summary.Cell>
+                <Table.Summary.Cell index={1} align="right">{summaryCell(totalActual)}</Table.Summary.Cell>
+                <Table.Summary.Cell index={2} align="right">{summaryCell(totalReserved)}</Table.Summary.Cell>
               </>
             )}
-            <Table.Summary.Cell index={scheduled ? 2 : 4} />
+            <Table.Summary.Cell index={scheduled ? 1 : 3} align="right">{summaryCell(totalPlanned)}</Table.Summary.Cell>
+            {!scheduled && <Table.Summary.Cell index={4} align="right">{summaryCell(plus(totalActual, totalReserved))}</Table.Summary.Cell>}
+            <Table.Summary.Cell index={scheduled ? 2 : 5} />
           </Table.Summary.Row>
         )}
         columns={[
-          { title: 'Name', dataIndex: 'name', key: 'name', ellipsis: true },
           {
-            title: 'Planned',
-            dataIndex: 'planned',
-            key: 'planned',
-            align: 'right',
-            width: 110,
-            render: (_v: number, row: BudgetRow) => splitView
-              ? <SplitAmount inc={row.incPlanned} exp={row.expPlanned} />
-              : <span style={{ color: amountColor(row.planned) }}>{fmt(row.planned)}</span>,
+            title: 'Name', key: 'name', ellipsis: true,
+            render: (_: unknown, row: TableRow) => {
+              if (!isTxTreeRow(row)) return row.name
+              const t = row.tx
+              const pending = t.executedOn === null
+              return (
+                <span style={{ ...SMALL, color: pending ? '#8c8c8c' : undefined }}>
+                  {shortDate(pending ? plannedDateOf(t, planStartDate) : t.executedOn)} · {t.name ?? '(unnamed)'}
+                </span>
+              )
+            },
           },
           ...(!scheduled ? [
             {
               title: 'Actual',
-              dataIndex: 'actual',
               key: 'actual',
               align: 'right' as const,
               width: 110,
-              render: (_v: number, row: BudgetRow) => splitView
-                ? <SplitAmount inc={row.incActual} exp={row.expActual} />
-                : <span style={{ color: amountColor(row.actual) }}>{fmt(row.actual)}</span>,
+              render: (_: unknown, row: TableRow) => amountCell(row, shown(row).actual),
             },
             {
               title: 'Reserved',
-              dataIndex: 'reserved',
               key: 'reserved',
               align: 'right' as const,
               width: 110,
-              render: (_v: number, row: BudgetRow) => splitView
-                ? <SplitAmount inc={row.incReserved} exp={row.expReserved} />
-                : <span style={{ color: amountColor(row.reserved) }}>{fmt(row.reserved)}</span>,
+              render: (_: unknown, row: TableRow) => amountCell(row, shown(row).reserved),
             },
           ] : []),
           {
+            title: 'Planned',
+            key: 'planned',
+            align: 'right' as const,
+            width: 110,
+            render: (_: unknown, row: TableRow) => {
+              if (isTxTreeRow(row)) return txAmount(row.tx, row.tx.plannedAmount)
+              if (isExpanded(row)) {
+                if (row.envelope == null) return null
+                return splitView
+                  ? <SplitAmount inc={0} exp={Math.abs(row.envelope)} />
+                  : <span style={{ color: amountColor(row.envelope) }}>{fmt(row.envelope)}</span>
+              }
+              return splitView
+                ? <SplitAmount inc={row.incPlanned} exp={row.expPlanned} />
+                : <span style={{ color: amountColor(row.planned) }}>{fmt(row.planned)}</span>
+            },
+          },
+          ...(!scheduled ? [
+            {
+              title: 'Projected',
+              key: 'projected',
+              align: 'right' as const,
+              width: 110,
+              render: (_: unknown, row: TableRow) => {
+                const { actual, reserved } = shown(row)
+                return amountCell(row, plus(actual, reserved))
+              },
+            },
+          ] : []),          {
             title: '',
             key: 'actions',
-            width: 40,
-            render: (_: unknown, row: BudgetRow) => {
+            width: 60,
+            align: 'right' as const,
+            render: (_: unknown, row: TableRow) => {
+              if (isTxTreeRow(row)) {
+                if (!txActions || !planId || planStatusCode === undefined) return null
+                return (
+                  <RowActions
+                    actions={txActions({
+                      id: row.tx.id, planId, planStatus: planStatusCode, budgetCompleted: row.budgetCompleted,
+                      templateId: row.tx.templateId ?? null, executed: row.tx.executedOn !== null,
+                    })}
+                  />
+                )
+              }
               if (row.key === '__direct__') {
                 if (!planId) return null
                 const qs = new URLSearchParams({ planId, ...(planName ? { planName } : {}) })
@@ -521,7 +657,6 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     </div>
   )
 }
-
 function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void }) {
   const navigate = useNavigate()
   const dateRange = [plan.startDate, plan.endDate]
@@ -531,13 +666,49 @@ function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onA
 
   const scheduled = plan.statusCode === 2
   const ep = execProgress(stats)
+  const recurring = !!plan.templateIntervalType && plan.templateIntervalType !== 'ONE_TIME'
+
+  const actions: RowAction[] = [
+    ...(plan.statusCode === 1 && !plan.templateId && onDiscard
+      ? [{
+        key: 'discard', label: 'Discard plan', icon: <StopOutlined />, danger: true,
+        confirm: { title: 'Discard this plan?', description: 'It has no template anymore and will be marked as Cancelled.', okText: 'Discard' },
+        onClick: () => onDiscard(plan),
+      }]
+      : []),
+    ...(plan.statusCode === 0 && !plan.isTemplate && !plan.templateId && plan.intervalType === 'ONE_TIME' && onActivate
+      ? [{ key: 'activate', label: 'Activate plan', icon: <PlayCircleOutlined />, onClick: () => onActivate(plan) }]
+      : []),
+    ...(plan.templateId && recurring && onShowOccurrences
+      ? [{ key: 'occurrences', label: 'Show all occurrences', icon: <HistoryOutlined />, onClick: () => onShowOccurrences(plan) }]
+      : []),
+    ...((plan.statusCode === 1 || plan.statusCode === 2) && plan.templateId && recurring && onChangeRecurrence
+      ? [{ key: 'recurrence', label: 'Change recurrence', icon: <SyncOutlined />, onClick: () => onChangeRecurrence(plan) }]
+      : []),
+    ...(!plan.isTemplate && (plan.statusCode === 1 || plan.statusCode === 3)
+      ? [{ key: 'details', label: 'View details', icon: <EyeOutlined />, onClick: () => navigate(`/plans/${plan.id}`) }]
+      : []),
+    ...(plan.statusCode !== 3
+      ? [{ key: 'edit', label: 'Edit plan', icon: <EditOutlined />, onClick: () => navigate(`/plans/${plan.id}/edit`) }]
+      : []),
+    {
+      key: 'transactions', label: 'View transactions', icon: <UnorderedListOutlined />,
+      onClick: () => {
+        const qs = new URLSearchParams({ planId: plan.id, ...(plan.name ? { planName: planLabel(plan) } : {}) })
+        navigate(`/transactions?${qs}`)
+      },
+    },
+  ]
+
+  // Active and completed plans open their details; scheduled, draft and cancelled ones open the editor
+  const primaryAction = actions.find((a) => a.key === 'details') ?? actions.find((a) => a.key === 'edit')
 
   return (
     <div style={{ width: '100%' }}>
       {/* Top row: name + status tag */}
       <div style={{ display: 'flex', alignItems: 'center', width: '100%', gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Text strong>{planLabel(plan)}</Text>
+          <Typography.Link strong onClick={(e) => { e.stopPropagation(); void primaryAction?.onClick() }}>{planLabel(plan)}</Typography.Link>
           {dateRange && (
             <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
               {dateRange}
@@ -545,64 +716,7 @@ function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onA
           )}
         </div>
         <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
-        {plan.statusCode === 1 && !plan.templateId && onDiscard && (
-          <Popconfirm
-            title="Discard this plan?"
-            description="It has no template anymore and will be marked as Cancelled."
-            onConfirm={() => onDiscard(plan)}
-            okText="Discard"
-            okType="danger"
-            cancelText="Cancel"
-            onPopupClick={(e) => e.stopPropagation()}
-          >
-            <Tooltip title="Discard plan">
-              <Button size="small" type="text" danger icon={<StopOutlined />} onClick={(e) => e.stopPropagation()} />
-            </Tooltip>
-          </Popconfirm>
-        )}
-        {plan.statusCode === 0 && !plan.isTemplate && !plan.templateId && plan.intervalType === 'ONE_TIME' && onActivate && (
-          <Tooltip title="Activate plan">
-            <Button
-              size="small" type="text" icon={<PlayCircleOutlined />}
-              onClick={(e) => { e.stopPropagation(); onActivate(plan) }}
-            />
-          </Tooltip>
-        )}
-        {plan.templateId && onShowOccurrences && plan.templateIntervalType && plan.templateIntervalType !== 'ONE_TIME' && (
-          <Tooltip title="Show all occurrences">
-            <Button
-              size="small" type="text" icon={<HistoryOutlined />}
-              onClick={(e) => { e.stopPropagation(); onShowOccurrences(plan) }}
-            />
-          </Tooltip>
-        )}
-        {(plan.statusCode === 1 || plan.statusCode === 2) && plan.templateId && onChangeRecurrence
-          && plan.templateIntervalType && plan.templateIntervalType !== 'ONE_TIME' && (
-          <Tooltip title="Change recurrence">
-            <Button
-              size="small" type="text" icon={<SyncOutlined />}
-              onClick={(e) => { e.stopPropagation(); onChangeRecurrence(plan) }}
-            />
-          </Tooltip>
-        )}
-        {plan.statusCode !== 3 && (
-          <Tooltip title="Edit plan">
-            <Button
-              size="small" type="text" icon={<EditOutlined />}
-              onClick={(e) => { e.stopPropagation(); navigate(`/plans/${plan.id}/edit`) }}
-            />
-          </Tooltip>
-        )}
-        <Tooltip title="View transactions">
-          <Button
-            size="small" type="text" icon={<UnorderedListOutlined />}
-            onClick={(e) => {
-              e.stopPropagation()
-              const qs = new URLSearchParams({ planId: plan.id, ...(plan.name ? { planName: planLabel(plan) } : {}) })
-              navigate(`/transactions?${qs}`)
-            }}
-          />
-        </Tooltip>
+        <RowActions actions={actions} />
       </div>
       {/* Summary row: actual / reserved / planned + bar */}
       {splitView ? (
@@ -697,9 +811,15 @@ export default function PlansOverviewPage() {
   const [createForm] = Form.useForm<{ name: string; intervalType: string }>()
   const [recurrencePlanId, setRecurrencePlanId] = useState<string | null>(null)
   const [activatePlan, setActivatePlan] = useState<PlanDetailed | null>(null)
+  const [logOpen, setLogOpen] = useState(false)
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
+
   const [templateId, setTemplateId] = useState<string | null>(returnState.templateId ?? null)
   const [templates, setTemplates] = useState<{ id: string; name: string }[]>([])
   const [reloadKey, setReloadKey] = useState(0)
+  const { actionsFor: txActions, modals: txModals } = usePlanTxActions(() => setReloadKey((k) => k + 1))
+
+  useEffect(() => { setVisibleCounts({}) }, [mode, templateId])
 
   useEffect(() => {
     const state: PlansOverviewState = { mode, templateId, offset, splitView, expandedTemplateIds, expandedPlanIds, savedDates }
@@ -758,6 +878,26 @@ export default function PlansOverviewPage() {
     setTemplateId(plan.isTemplate ? plan.id : plan.templateId ?? null)
   }
 
+  function templateActions(plan: PlanDetailed): RowAction[] {
+    return [
+      ...(plan.statusCode !== 0 && plan.intervalType !== 'ONE_TIME'
+        ? [{ key: 'occurrences', label: 'Show all occurrences', icon: <HistoryOutlined />, onClick: () => showTemplate(plan) }]
+        : []),
+      ...(plan.statusCode === 0 ? [{ key: 'activate', label: 'Activate', icon: <PlayCircleOutlined />, onClick: () => setActivatePlan(plan) }] : []),
+      ...(plan.statusCode === 1 && plan.intervalType !== 'ONE_TIME'
+        ? [{ key: 'recurrence', label: 'Change recurrence', icon: <SyncOutlined />, onClick: () => setRecurrencePlanId(plan.id) }]
+        : []),
+      {
+        key: 'edit', label: 'Edit template', icon: <EditOutlined />,
+        onClick: () => navigate(`/plans/${plan.id}/edit`, { state: { returnState: { mode, offset, splitView, expandedTemplateIds } } }),
+      },
+      {
+        key: 'delete', label: 'Delete template', icon: <DeleteOutlined />, danger: true, disabled: deletingPlanId === plan.id,
+        confirm: { title: 'Delete this plan template?', description: 'This action cannot be undone.', okText: 'Delete' },
+        onClick: () => deleteTemplate(plan),
+      },
+    ]
+  }
   function cycleTemplate(step: number) {
     if (templates.length === 0) return
     const index = templates.findIndex((t) => t.id === templateId)
@@ -849,7 +989,12 @@ export default function PlansOverviewPage() {
     if (mode === 'active' || mode === 'templates') return null
     const groups = mode === 'template' ? [...STATUS_GROUPS, { key: '4', label: 'Cancelled Plans', codes: [4] }] : STATUS_GROUPS
     return groups
-      .map((g) => ({ ...g, plans: plans.filter((p) => g.codes.includes(p.statusCode)) }))
+      .map((g) => {
+        const inGroup = plans.filter((p) => g.codes.includes(p.statusCode))
+        // Template view: the nearest upcoming plan comes first
+        if (mode === 'template' && g.key === '2') inGroup.sort((a, b) => (a.startDate ?? '').localeCompare(b.startDate ?? ''))
+        return { ...g, plans: inGroup }
+      })
       .filter((g) => g.plans.length > 0)
   }, [mode, plans])
 
@@ -871,9 +1016,9 @@ export default function PlansOverviewPage() {
     return {
       key: plan.id,
       label: <PlanHeader plan={plan} stats={stats} splitView={splitView} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} />,
-      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} splitView={splitView} />,
+      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} />,
     }
-  }), [period, splitView, discardPlan])
+  }), [period, splitView, discardPlan, txActions])
 
   // Active plans default open
   const activeDefaultKeys = useMemo(
@@ -884,11 +1029,13 @@ export default function PlansOverviewPage() {
   return (
     <Space orientation="vertical" style={{ width: '100%' }} size="large">
       {contextHolder}
+      {txModals}
       <ChangeRecurrenceModal
         planId={recurrencePlanId}
         onClose={() => setRecurrencePlanId(null)}
         onChanged={() => setReloadKey((k) => k + 1)}
       />
+      <LogTransactionModal open={logOpen} onClose={() => setLogOpen(false)} onLogged={() => setReloadKey((k) => k + 1)} />
       <ActivatePlanModal
         plan={activatePlan}
         onClose={() => setActivatePlan(null)}
@@ -981,6 +1128,9 @@ export default function PlansOverviewPage() {
         )}
         <Col style={{ minWidth: 140, textAlign: 'right' }}>
           <Space>
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setLogOpen(true)}>
+              Log transaction
+            </Button>
             {mode === 'templates' && (
               <Button
                 type="primary"
@@ -1017,63 +1167,12 @@ export default function PlansOverviewPage() {
                       label: (
                         <div style={{ width: '100%' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Text strong style={{ flex: 1 }}>{plan.name ?? '(unnamed)'}</Text>
+                            <Typography.Link strong style={{ flex: 1 }} onClick={(e) => { e.stopPropagation(); void templateActions(plan).find((a) => a.key === 'edit')?.onClick() }}>
+                              {plan.name ?? '(unnamed)'}
+                            </Typography.Link>
                             <Tag color="purple">{plan.intervalType}</Tag>
                             <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
-                            {plan.statusCode !== 0 && plan.intervalType !== 'ONE_TIME' && (
-                              <Tooltip title="Show all occurrences">
-                                <Button
-                                  size="small" type="text" icon={<HistoryOutlined />}
-                                  onClick={(e) => { e.stopPropagation(); showTemplate(plan) }}
-                                />
-                              </Tooltip>
-                            )}
-                            {plan.statusCode === 0 && (
-                              <Tooltip title="Activate">
-                                <Button
-                                  size="small" type="text" icon={<PlayCircleOutlined />}
-                                  onClick={(e) => { e.stopPropagation(); setActivatePlan(plan) }}
-                                />
-                              </Tooltip>
-                            )}
-                            {plan.statusCode === 1 && plan.intervalType !== 'ONE_TIME' && (
-                              <Tooltip title="Change recurrence">
-                                <Button
-                                  size="small" type="text" icon={<SyncOutlined />}
-                                  onClick={(e) => { e.stopPropagation(); setRecurrencePlanId(plan.id) }}
-                                />
-                              </Tooltip>
-                            )}
-                            <Tooltip title="Edit template">
-                              <Button
-                                size="small" type="text" icon={<EditOutlined />}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  navigate(`/plans/${plan.id}/edit`, {
-                                    state: { returnState: { mode, offset, splitView, expandedTemplateIds } },
-                                  })
-                                }}
-                              />
-                            </Tooltip>
-                            <Popconfirm
-                              title="Delete this plan template?"
-                              description="This action cannot be undone."
-                              onConfirm={() => deleteTemplate(plan)}
-                              okText="Delete"
-                              okType="danger"
-                              cancelText="Cancel"
-                            >
-                              <Tooltip title="Delete template">
-                                <Button
-                                  size="small"
-                                  type="text"
-                                  danger
-                                  loading={deletingPlanId === plan.id}
-                                  icon={<DeleteOutlined />}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </Tooltip>
-                            </Popconfirm>
+                            <RowActions actions={templateActions(plan)} />
                           </div>
                           {splitView ? (
                             <div style={{ marginTop: 4 }}>
@@ -1126,17 +1225,31 @@ export default function PlansOverviewPage() {
               : <Text type="secondary">No active plans found.</Text>
           ) : (
             groupedByStatus && groupedByStatus.length > 0
-              ? groupedByStatus.map((group) => (
-                  <div key={group.key}>
-                    <Title level={5} style={{ marginBottom: 8 }}>{group.label}</Title>
-                    <Collapse
-                      styles={{ body: { padding: 0 } }}
-                      items={collapseItems(group.plans)}
-                      activeKey={expandedPlanIds ?? []}
-                      onChange={(keys) => changeExpanded(group.plans, keys, [])}
-                    />
-                  </div>
-                ))
+              ? groupedByStatus.map((group) => {
+                  // Template view lists long histories, so scheduled and completed plans load in chunks
+                  const paged = mode === 'template' && (group.key === '2' || group.key === '3')
+                  const visible = visibleCounts[group.key] ?? INITIAL_VISIBLE
+                  const shown = paged ? group.plans.slice(0, visible) : group.plans
+                  return (
+                    <div key={group.key}>
+                      <Title level={5} style={{ marginBottom: 8 }}>{group.label}{paged ? ` (${group.plans.length})` : ''}</Title>
+                      <Collapse
+                        styles={{ body: { padding: 0 } }}
+                        items={collapseItems(shown)}
+                        activeKey={expandedPlanIds ?? []}
+                        onChange={(keys) => changeExpanded(group.plans, keys, [])}
+                      />
+                      {paged && group.plans.length > visible && (
+                        <Button
+                          type="link" style={{ paddingLeft: 0 }}
+                          onClick={() => setVisibleCounts((c) => ({ ...c, [group.key]: visible + LOAD_MORE_STEP }))}
+                        >
+                          Show {Math.min(LOAD_MORE_STEP, group.plans.length - visible)} more ({group.plans.length - visible} remaining)
+                        </Button>
+                      )}
+                    </div>
+                  )
+                })
               : <Text type="secondary">{mode === 'template' ? 'No occurrences found for this template.' : 'No plans found for this period.'}</Text>
           )}
 

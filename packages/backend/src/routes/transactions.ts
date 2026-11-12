@@ -168,6 +168,58 @@ transactionsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
   res.status(204).end()
 })
 
+// POST /api/transactions/:id/execute  body: { executedOn?: ISO date, amount?: number, name?, fromAccountId?, toAccountId? }
+// Logs a planned transaction of an active plan as executed; amount defaults to the planned amount.
+transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) => {
+  const id = String(req.params.id)
+  const existing = await db.transaction.findFirst({
+    where: { id, ...ownerFilter(req.user!.sub) },
+    include: { template: true, plan: true, budget: { include: { plan: true } } },
+  })
+  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  const plan = existing.plan ?? existing.budget?.plan
+  if (!plan || plan.isTemplate || plan.statusCode !== 1) { res.status(409).json({ error: 'Only transactions of active plans can be executed' }); return }
+  if (existing.executedOn) { res.status(409).json({ error: 'Transaction is already executed' }); return }
+
+  const executedOn = req.body?.executedOn ? new Date(req.body.executedOn) : new Date()
+  if (isNaN(executedOn.getTime())) { res.status(400).json({ error: 'Invalid executedOn' }); return }
+  const amount = Number(req.body?.amount ?? existing.plannedAmount ?? existing.template?.plannedAmount)
+  if (!Number.isFinite(amount) || amount <= 0) { res.status(400).json({ error: 'A positive amount is required' }); return }
+
+  const tx = await db.transaction.update({
+    where: { id },
+    data: {
+      executedOn,
+      amount: amount.toFixed(4),
+      // Values changed while executing become overrides of the template values
+      name: typeof req.body?.name === 'string' ? req.body.name : undefined,
+      fromAccountId: typeof req.body?.fromAccountId === 'string' ? req.body.fromAccountId : undefined,
+      toAccountId: typeof req.body?.toAccountId === 'string' ? req.body.toAccountId : undefined,
+    },
+  })
+  res.json(tx)
+})
+
+// POST /api/transactions/:id/unexecute
+// Reverts an executed template-based transaction to its planned state.
+transactionsRouter.post('/:id/unexecute', async (req: AuthenticatedRequest, res) => {
+  const id = String(req.params.id)
+  const existing = await db.transaction.findFirst({
+    where: { id, ...ownerFilter(req.user!.sub) },
+    include: { plan: true, budget: { include: { plan: true } } },
+  })
+  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  const plan = existing.plan ?? existing.budget?.plan
+  if (plan?.statusCode === 3 || existing.budget?.statusCode === 3) { res.status(409).json({ error: 'Transactions of completed plans can only be deleted' }); return }
+  if (!existing.executedOn) { res.status(409).json({ error: 'Transaction is not executed' }); return }
+  if (!existing.templateId) { res.status(409).json({ error: 'Only template transactions can be discarded; delete it instead' }); return }
+  const tx = await db.$transaction(async (client) => {
+    await client.transactionTag.deleteMany({ where: { transactionId: id } })
+    return client.transaction.update({ where: { id }, data: { executedOn: null, amount: null, bankTicketId: null } })
+  })
+  res.json(tx)
+})
+
 // POST /api/transactions/:id/tags
 transactionsRouter.post('/:id/tags', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)

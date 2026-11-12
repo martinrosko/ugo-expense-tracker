@@ -7,6 +7,7 @@ import ReviewPage from './pages/ReviewPage'
 import RescoTestPage from './pages/RescoTestPage'
 import PlansOverviewPage from './pages/PlansOverviewPage'
 import PlanEditPage from './pages/PlanEditPage'
+import PlanDetailPage from './pages/PlanDetailPage'
 import TransactionsPage from './pages/TransactionsPage'
 import PartnerBalancePage from './pages/PartnerBalancePage'
 import BudgetChartPage from './pages/BudgetChartPage'
@@ -22,6 +23,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Navigate to="/plans" replace />} />
                 <Route path="/plans" element={<PlansOverviewPage />} />
+                <Route path="/plans/:id" element={<PlanDetailPage />} />
                 <Route path="/plans/:id/edit" element={<PlanEditPage />} />
                 <Route path="/transactions" element={<TransactionsPage />} />
                 <Route path="/partners" element={<PartnerBalancePage />} />
