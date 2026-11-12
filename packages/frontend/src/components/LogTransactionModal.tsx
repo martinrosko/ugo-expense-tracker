@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Select, Space, Spin, Typography, message } from 'antd'
+import { Alert, App, Select, Space, Spin, Typography } from 'antd'
 import apiClient from '../api/apiClient'
 import TransactionModal, { type TxModalBody, type TxModalTx } from './TransactionModal'
 import { planLabel } from '../features/planLabel'
@@ -46,6 +46,8 @@ type Props = {
   open: boolean
   /** Fixes the plan and hides the plan picker */
   planId?: string
+  /** Limits the dialog to one budget of the plan; null means the plan's general (no-budget) transactions */
+  budgetId?: string | null
   onClose: () => void
   onLogged: () => void
 }
@@ -54,8 +56,8 @@ type Props = {
  * Logs a transaction into an active or completed plan: executes a planned one, or records an unplanned one
  * (optionally copied from an already executed transaction).
  */
-export default function LogTransactionModal({ open, planId, onClose, onLogged }: Props) {
-  const [messageApi, contextHolder] = message.useMessage()
+export default function LogTransactionModal({ open, planId, budgetId, onClose, onLogged }: Props) {
+  const { message: messageApi } = App.useApp()
   const [accounts, setAccounts] = useState<Account[]>([])
   const [planOptions, setPlanOptions] = useState<PlanOption[]>([])
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
@@ -96,7 +98,10 @@ export default function LogTransactionModal({ open, planId, onClose, onLogged }:
   }, [open, selectedPlanId])
 
   const accountMap = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
-  const txs = useMemo(() => (plan ? resolveAll(plan, accountMap) : []), [plan, accountMap])
+  const txs = useMemo(
+    () => (plan ? resolveAll(plan, accountMap).filter((t) => budgetId === undefined || t.budgetId === budgetId) : []),
+    [plan, accountMap, budgetId],
+  )
   const active = plan?.statusCode === 1
   const completed = plan?.statusCode === 3
   const planned = useMemo(() => (active ? txs.filter((t) => !t.executedOn && !t.budgetCompleted).sort(byPlannedDate) : []), [txs, active])
@@ -122,9 +127,10 @@ export default function LogTransactionModal({ open, planId, onClose, onLogged }:
     ...(executed.length > 0 ? [{ label: 'Executed (copy values)', options: executed.map((t) => ({ value: t.id, label: `${fmtDate(t.executedOn)} · ${t.name}${fmtAmount(t.amount)}` })) }] : []),
   ]
 
-  const budgets = plan
+  const allBudgets = plan
     ? [{ value: null as string | null, label: 'General (no budget)' }, ...plan.budgets.map((b) => ({ value: b.id as string | null, label: b.name ?? b.template?.name ?? '(unnamed)' }))]
     : undefined
+  const budgets = budgetId === undefined ? allBudgets : allBudgets?.filter((b) => b.value === budgetId)
 
   const extra = (
     <Space direction="vertical" style={{ width: '100%' }} size={12}>
@@ -186,24 +192,22 @@ export default function LogTransactionModal({ open, planId, onClose, onLogged }:
   }
 
   return (
-    <>
-      {contextHolder}
-      <TransactionModal
-        mode="execute"
-        open={open}
-        tx={selected ? modalTx(selected, selected.executedOn ? selected.amount : selected.plannedAmount) : null}
-        accounts={accounts}
-        planIntervalType={plan?.intervalType ?? 'ONE_TIME'}
-        budgets={budgets}
-        budgetLocked={executing}
-        extra={extra}
-        resetKey={`${selectedPlanId}:${txKey}`}
-        title={executing ? 'Execute Transaction' : 'Log Transaction'}
-        okText={executing ? 'Execute' : 'Log'}
-        okDisabled={!plan || loadingPlan}
-        onOk={submit}
-        onCancel={onClose}
-      />
-    </>
+    <TransactionModal
+      mode="execute"
+      open={open}
+      tx={selected ? modalTx(selected, selected.executedOn ? selected.amount : selected.plannedAmount) : null}
+      accounts={accounts}
+      planIntervalType={plan?.intervalType ?? 'ONE_TIME'}
+      budgets={budgets}
+      budgetLocked={executing || budgetId !== undefined}
+      initialBudgetId={budgetId}
+      extra={extra}
+      resetKey={`${selectedPlanId}:${txKey}:${budgetId}`}
+      title={executing ? 'Execute Transaction' : 'Log Transaction'}
+      okText={executing ? 'Execute' : 'Log'}
+      okDisabled={!plan || loadingPlan}
+      onOk={submit}
+      onCancel={onClose}
+    />
   )
 }

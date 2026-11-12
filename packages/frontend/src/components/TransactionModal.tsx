@@ -74,7 +74,7 @@ const MONTH_OPTIONS = [
  * Add/edit a planned transaction ('plan') or log it as executed ('execute').
  * Execute mode asks for the execution date instead of the due day; with tx = null it logs an unplanned transaction.
  */
-export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, extra, resetKey, title, okText, okDisabled, onOk, onCancel }: {
+export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, onOk, onCancel }: {
   open: boolean
   tx: TxModalTx | null
   accounts: AccountRef[]
@@ -83,6 +83,8 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   /** Shows a budget picker (execute mode); a null value means "no budget" */
   budgets?: { value: string | null; label: string }[]
   budgetLocked?: boolean
+  /** Execute mode: budget to preselect for a new transaction (null = no budget) */
+  initialBudgetId?: string | null
   /** Rendered above the form, e.g. plan and transaction pickers */
   extra?: ReactNode
   /** Changing it while open re-initializes the form from tx */
@@ -153,7 +155,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
     if (!open) return
     form.resetFields()
     setDueN(1); setDueDayType('day'); setDueDirection('from_start'); setDueWeekday(1); setDueMonth(0)
-    if (execute) form.setFieldsValue({ executedOn: tx?.executedOn ? dayjs(tx.executedOn) : dayjs(), budgetId: tx?.budgetId ?? null })
+    if (execute) form.setFieldsValue({ executedOn: tx?.executedOn ? dayjs(tx.executedOn) : dayjs(), budgetId: tx?.budgetId ?? initialBudgetId ?? null })
     if (tx) {
       setDirection(directionFromTx(tx))
       form.setFieldsValue({

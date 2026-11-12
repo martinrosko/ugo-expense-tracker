@@ -12,13 +12,13 @@ export type RowAction = {
   onClick: () => void | Promise<unknown>
 }
 
-/** Icon buttons for up to two actions; a hamburger menu beyond that. */
-export default function RowActions({ actions }: { actions: RowAction[] }) {
+/** Icon buttons for up to two actions; a hamburger menu beyond that, or always with `menu`. */
+export default function RowActions({ actions, menu = false }: { actions: RowAction[]; menu?: boolean }) {
   if (actions.length === 0) return null
   // Rows and card headers are clickable, so clicks on the actions must not reach them
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
 
-  if (actions.length > 2) {
+  if (menu || actions.length > 2) {
     return (
       <span onClick={stop}>
         <Dropdown

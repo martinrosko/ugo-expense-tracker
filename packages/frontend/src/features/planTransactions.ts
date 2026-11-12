@@ -119,6 +119,14 @@ export function resolveAll(plan: RawPlan, accounts: Map<string, Account>): Tx[] 
   ].filter((t) => t.raw.type === 'TRANSACTION')
 }
 
+/** A pending transaction whose planned day is before today */
+export function isOverdue(t: Tx): boolean {
+  if (t.executedOn !== null || !t.plannedDate) return false
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return t.plannedDate < today
+}
+
 export const byPlannedDate = (a: Tx, b: Tx) => (a.plannedDate?.getTime() ?? Infinity) - (b.plannedDate?.getTime() ?? Infinity)
 export const byExecutedNewestFirst = (a: Tx, b: Tx) => b.executedOn!.getTime() - a.executedOn!.getTime()
 

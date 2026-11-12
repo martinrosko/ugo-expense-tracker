@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Alert, Button, Space, Spin, Table, Tag, Tooltip, Typography } from 'antd'
-import { ArrowLeftOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, EditOutlined, ExclamationCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import apiClient from '../api/apiClient'
 import LogTransactionModal from '../components/LogTransactionModal'
 import RowActions from '../components/RowActions'
 import { usePlanTxActions, type TxActionContext } from '../features/usePlanTxActions'
 import {
-  apiError, byExecutedNewestFirst, byPlannedDate, direction, num, resolveAll,
+  apiError, byExecutedNewestFirst, byPlannedDate, direction, isOverdue, num, resolveAll,
   type Account, type RawPlan, type Tx,
 } from '../features/planTransactions'
 import { planLabel } from '../features/planLabel'
@@ -109,12 +109,16 @@ export default function PlanDetailPage() {
   const title = planLabel({ name: plan.name ?? plan.template?.name ?? null, isTemplate: plan.isTemplate, intervalType: plan.intervalType, startDate: plan.startDate })
   const dateRange = [plan.startDate, plan.endDate].filter(Boolean).map((d) => new Date(d!).toLocaleDateString('sk-SK')).join(' – ')
 
-  const nameCell = (t: Tx) => (
-    <Space size={4}>
-      <span>{t.name}</span>
-      {t.templateId && <Tag style={{ fontSize: 11 }}>template</Tag>}
-    </Space>
-  )
+  const nameCell = (t: Tx) => {
+    const overdue = active && isOverdue(t)
+    return (
+      <Space size={4} style={overdue ? { color: '#cf1322', fontWeight: 600 } : undefined}>
+        {overdue && <Tooltip title="Overdue"><ExclamationCircleOutlined /></Tooltip>}
+        <span>{t.name}</span>
+        {t.templateId && <Tag style={{ fontSize: 11 }}>template</Tag>}
+      </Space>
+    )
+  }
   const accountsCell = (t: Tx) => `${t.from?.name ?? '?'} → ${t.to?.name ?? '?'}`
 
   const txContext = (t: Tx): TxActionContext => ({
@@ -153,7 +157,11 @@ export default function PlanDetailPage() {
               title: 'Name', key: 'name',
               render: (_: unknown, row) => (isTxRow(row) ? nameCell(row.tx) : <Text strong>{row.name}</Text>),
             },
-            { title: 'Planned', key: 'date', width: 110, render: (_: unknown, row) => (isTxRow(row) ? fmtDate(row.tx.plannedDate) : null) },
+            { title: 'Planned', key: 'date', width: 110, render: (_: unknown, row) => {
+                if (!isTxRow(row)) return null
+                const overdue = active && isOverdue(row.tx)
+                return <span style={overdue ? { color: '#cf1322', fontWeight: 600 } : undefined}>{fmtDate(row.tx.plannedDate)}</span>
+              } },
             { title: 'Accounts', key: 'accounts', width: 220, render: (_: unknown, row) => (isTxRow(row) ? accountsCell(row.tx) : null) },
             { title: 'Budget', key: 'envelope', align: 'right', width: 130, render: (_: unknown, row) => (isTxRow(row) ? null : fmt(row.envelope)) },
             {

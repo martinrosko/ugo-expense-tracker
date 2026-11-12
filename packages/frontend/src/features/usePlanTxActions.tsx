@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { message } from 'antd'
+import { App } from 'antd'
 import { CheckOutlined, DeleteOutlined, EditOutlined, UndoOutlined } from '@ant-design/icons'
 import apiClient from '../api/apiClient'
 import TransactionModal, { type TxModalBody, type TxModalTx } from '../components/TransactionModal'
@@ -39,7 +39,7 @@ const changed = <T,>(next: T | null, current: T | null) => (next !== null && nex
  * transaction, discard an execution, delete. `modals` must be rendered once by the caller.
  */
 export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
-  const [messageApi, contextHolder] = message.useMessage()
+  const { message: messageApi } = App.useApp()
   const [target, setTarget] = useState<Target | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -160,7 +160,6 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
 
   const modals: ReactNode = (
     <>
-      {contextHolder}
       <TransactionModal
         mode="execute" open={executeTarget !== null}
         tx={executeTarget ? modalTx(executeTarget.tx, executeTarget.tx.plannedAmount) : null}

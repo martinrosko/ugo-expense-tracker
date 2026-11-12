@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+﻿import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Typography,
   Space,
@@ -11,7 +11,6 @@ import {
   Alert,
   Row,
   Col,
-  Statistic,
   Table,
   DatePicker,
   Tooltip,
@@ -22,7 +21,7 @@ import {
   Input,
   Select,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined, EyeOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined, EyeOutlined, ExclamationCircleOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -425,6 +424,15 @@ function shortDate(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleDateString('sk-SK', { day: 'numeric', month: 'numeric' }) : '—'
 }
 
+/** True when the YYYY-MM-DD day is before today */
+function isOverdueDay(value: string | null): boolean {
+  if (!value) return false
+  const [y, m, d] = value.slice(0, 10).split('-').map(Number)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return new Date(y, m - 1, d) < today
+}
+
 function plannedDateOf(tx: TxSummary, planStartDate?: string | null): string | null {
   return tx.plannedOn ?? computePlannedOnLabel(tx.dueDateConfig, planStartDate)
 }
@@ -466,11 +474,8 @@ function txSplit(tx: TxSummary, raw: string | null): { inc: number; exp: number 
   return { inc: kind === 'income' ? v : 0, exp: kind === 'expense' ? v : 0 }
 }
 
-function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, planEndDate, planId, planName, planStatusCode, splitView, txActions }: { budgets: BudgetWithTx[]; directTxs?: TxSummary[]; scheduled?: boolean; from?: Date; to?: Date; planStartDate?: string | null; planEndDate?: string | null; planId?: string; planName?: string | null; planStatusCode?: number; splitView?: boolean; txActions?: (ctx: TxActionContext) => RowAction[] }) {
+function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, planEndDate, planId, planName, planStatusCode, splitView, txActions, onLogTransaction }: { budgets: BudgetWithTx[]; directTxs?: TxSummary[]; scheduled?: boolean; from?: Date; to?: Date; planStartDate?: string | null; planEndDate?: string | null; planId?: string; planName?: string | null; planStatusCode?: number; splitView?: boolean; txActions?: (ctx: TxActionContext) => RowAction[]; onLogTransaction?: (planId: string, budgetId: string | null) => void }) {
   const navigate = useNavigate()
-  const [expandedKeys, setExpandedKeys] = useState<string[]>(() => (planStatusCode === 1 ? [...budgets.map((b) => b.id), '__direct__'] : []))
-  // An expanded budget shows its own size, since the rows below carry the amounts; collapsed it shows the totals
-  const isExpanded = (row: BudgetRow) => !!row.children && expandedKeys.includes(row.key)
   const rows: BudgetRow[] = (budgets ?? []).map((b) => {
     const s = budgetStats(b, from, to, planStartDate, planEndDate)
     const ep = execProgress(s)
@@ -491,6 +496,24 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     rows.push({ key: '__direct__', name: 'General', planned, actual, reserved, incPlanned: dPlnS.inc, incActual: dActS.inc, incReserved: dResS.inc, expPlanned: dPlnS.exp, expActual: dActS.exp, expReserved: dResS.exp, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped, unplanned: unplannedExecuted(directTxs ?? [], from, to, planStartDate), ownReserved: withoutAmounts({ planned, actual, reserved, incPlanned: dPlnS.inc, incActual: dActS.inc, incReserved: dResS.inc, expPlanned: dPlnS.exp, expActual: dActS.exp, expReserved: dResS.exp }, pendingReserved(directTxs ?? [], from, to, planStartDate, () => true)), children: txChildren(directTxs ?? [], from, to, planStartDate, false) })
   }
 
+  // Active plans open the budgets that still have upcoming transactions; the rest start collapsed
+  const [expandedKeys, setExpandedKeys] = useState<string[]>(() => (planStatusCode === 1 ? rows.filter((r) => r.children?.some((c) => c.tx.executedOn === null)).map((r) => r.key) : []))
+  // An expanded budget shows its own size, since the rows below carry the amounts; collapsed it shows the totals
+  const isExpanded = (row: BudgetRow) => !!row.children && expandedKeys.includes(row.key)
+
+  const budgetActions = (row: BudgetRow): RowAction[] => {
+    if (!planId) return []
+    const isDirect = row.key === '__direct__'
+    const qs = new URLSearchParams(isDirect
+      ? { planId, ...(planName ? { planName } : {}) }
+      : { budgetId: row.key, budgetName: row.name, ...(planName ? { planName } : {}) })
+    return [
+      ...(onLogTransaction && (planStatusCode === 1 || planStatusCode === 3)
+        ? [{ key: 'log', label: 'Log transaction', icon: <PlusOutlined />, onClick: () => onLogTransaction(planId, isDirect ? null : row.key) }]
+        : []),
+      { key: 'transactions', label: 'View transactions', icon: <UnorderedListOutlined />, onClick: () => navigate(`/transactions?${qs}`) },
+    ]
+  }
   const sumOf = (pick: (r: BudgetRow) => Amt): Amt => rows.reduce((s, r) => { const a = pick(r); return { total: s.total + a.total, inc: s.inc + a.inc, exp: s.exp + a.exp } }, ZERO)
   const totalActual = sumOf((r) => ({ total: r.actual, inc: r.incActual, exp: r.expActual }))
   const totalReserved = sumOf((r) => ({ total: r.reserved, inc: r.incReserved, exp: r.expReserved }))
@@ -533,6 +556,24 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
 
   const summaryCell = (a: Amt) => (splitView ? <SplitAmount inc={a.inc} exp={a.exp} /> : <span style={{ color: amountColor(a.total) }}>{fmt(a.total)}</span>)
 
+  // Projected minus planned with signed amounts: positive means better than planned (less spent or more earned)
+  const plannedOf = (row: TableRow): number | null => {
+    if (isTxTreeRow(row)) return row.tx.plannedAmount !== null ? signedAmount(row.tx, row.tx.plannedAmount) : null
+    if (isExpanded(row)) return row.envelope ?? null
+    return row.planned
+  }
+  const deltaCell = (value: number | null, blankWhenZero: boolean, small = false) => {
+    if (value === null || (blankWhenZero && Math.abs(value) < 0.005)) return null
+    const color = value > 0.005 ? '#3f8600' : value < -0.005 ? '#cf1322' : undefined
+    return <span style={{ ...(small ? SMALL : {}), color }}>{value > 0.005 ? '+' : ''}{fmt(value)}</span>
+  }
+  const rowDelta = (row: TableRow) => {
+    const planned = plannedOf(row)
+    if (planned === null) return null
+    const { actual, reserved } = shown(row)
+    return actual.total + reserved.total - planned
+  }
+
   return (
     <div style={{ padding: '0 0px' }}>
       <Table<TableRow>
@@ -552,7 +593,8 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
             )}
             <Table.Summary.Cell index={scheduled ? 1 : 3} align="right">{summaryCell(totalPlanned)}</Table.Summary.Cell>
             {!scheduled && <Table.Summary.Cell index={4} align="right">{summaryCell(plus(totalActual, totalReserved))}</Table.Summary.Cell>}
-            <Table.Summary.Cell index={scheduled ? 2 : 5} />
+            {!scheduled && <Table.Summary.Cell index={5} align="right">{deltaCell(totalActual.total + totalReserved.total - totalPlanned.total, false)}</Table.Summary.Cell>}
+            <Table.Summary.Cell index={scheduled ? 2 : 6} />
           </Table.Summary.Row>
         )}
         columns={[
@@ -562,8 +604,11 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
               if (!isTxTreeRow(row)) return row.name
               const t = row.tx
               const pending = t.executedOn === null
+              const plannedDate = plannedDateOf(t, planStartDate)
+              const overdue = pending && planStatusCode === 1 && isOverdueDay(plannedDate)
               return (
-                <span style={{ ...SMALL, color: pending ? '#8c8c8c' : undefined }}>
+                <span style={{ ...SMALL, color: overdue ? '#cf1322' : pending ? '#8c8c8c' : undefined, fontWeight: overdue ? 600 : undefined }}>
+                  {overdue && <Tooltip title="Overdue"><ExclamationCircleOutlined style={{ marginRight: 4 }} /></Tooltip>}
                   {shortDate(pending ? plannedDateOf(t, planStartDate) : t.executedOn)} · {t.name ?? '(unnamed)'}
                 </span>
               )
@@ -614,6 +659,13 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
                 return amountCell(row, plus(actual, reserved))
               },
             },
+            {
+              title: 'Delta',
+              key: 'delta',
+              align: 'right' as const,
+              width: 110,
+              render: (_: unknown, row: TableRow) => deltaCell(rowDelta(row), isTxTreeRow(row) || isExpanded(row), isTxTreeRow(row)),
+            },
           ] : []),          {
             title: '',
             key: 'actions',
@@ -631,25 +683,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
                   />
                 )
               }
-              if (row.key === '__direct__') {
-                if (!planId) return null
-                const qs = new URLSearchParams({ planId, ...(planName ? { planName } : {}) })
-                return (
-                  <Tooltip title="View transactions">
-                    <Button size="small" type="text" icon={<UnorderedListOutlined />}
-                      onClick={(e) => { e.stopPropagation(); navigate(`/transactions?${qs}`) }} />
-                  </Tooltip>
-                )
-              }
-              const budget = budgets.find((b) => b.id === row.key)
-              if (!budget) return null
-              const qs = new URLSearchParams({ budgetId: budget.id, budgetName: row.name, ...(planName ? { planName } : {}) })
-              return (
-                <Tooltip title="View transactions">
-                  <Button size="small" type="text" icon={<UnorderedListOutlined />}
-                    onClick={(e) => { e.stopPropagation(); navigate(`/transactions?${qs}`) }} />
-                </Tooltip>
-              )
+              return <RowActions menu actions={budgetActions(row)} />
             },
           },
         ]}
@@ -657,7 +691,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     </div>
   )
 }
-function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void }) {
+function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences, onLogTransaction }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void; onLogTransaction?: (plan: PlanDetailed) => void }) {
   const navigate = useNavigate()
   const dateRange = [plan.startDate, plan.endDate]
     .map((d) => (d ? new Date(d).toLocaleDateString('sk-SK') : ''))
@@ -687,6 +721,9 @@ function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onA
       : []),
     ...(!plan.isTemplate && (plan.statusCode === 1 || plan.statusCode === 3)
       ? [{ key: 'details', label: 'View details', icon: <EyeOutlined />, onClick: () => navigate(`/plans/${plan.id}`) }]
+      : []),
+    ...(!plan.isTemplate && (plan.statusCode === 1 || plan.statusCode === 3) && onLogTransaction
+      ? [{ key: 'log', label: 'Log transaction', icon: <PlusOutlined />, onClick: () => onLogTransaction(plan) }]
       : []),
     ...(plan.statusCode !== 3
       ? [{ key: 'edit', label: 'Edit plan', icon: <EditOutlined />, onClick: () => navigate(`/plans/${plan.id}/edit`) }]
@@ -801,7 +838,7 @@ export default function PlansOverviewPage() {
   const [plans, setPlans] = useState<PlanDetailed[]>([])
   const [splitView, setSplitView] = useState(returnState.splitView ?? false)
   const [expandedTemplateIds, setExpandedTemplateIds] = useState<string[]>(returnState.expandedTemplateIds ?? [])
-  const [expandedPlanIds, setExpandedPlanIds] = useState<string[] | null>(returnState.expandedPlanIds ?? null)
+  const [expandedPlanIds, setExpandedPlanIds] = useState<string[] | null>(returnState.expandedPlanIds ? Array.from(new Set(returnState.expandedPlanIds)) : null)
   const [savedDates, setSavedDates] = useState<Partial<Record<PeriodKind, string>>>(returnState.savedDates ?? {})
   const [loading, setLoading] = useState(false)
   const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null)
@@ -811,7 +848,7 @@ export default function PlansOverviewPage() {
   const [createForm] = Form.useForm<{ name: string; intervalType: string }>()
   const [recurrencePlanId, setRecurrencePlanId] = useState<string | null>(null)
   const [activatePlan, setActivatePlan] = useState<PlanDetailed | null>(null)
-  const [logOpen, setLogOpen] = useState(false)
+  const [logTarget, setLogTarget] = useState<{ planId?: string; budgetId?: string | null } | null>(null)
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
 
   const [templateId, setTemplateId] = useState<string | null>(returnState.templateId ?? null)
@@ -828,8 +865,9 @@ export default function PlansOverviewPage() {
 
   function changeExpanded(groupPlans: PlanDetailed[], keys: string | string[], defaults: string[]) {
     const groupIds = new Set(groupPlans.map((p) => p.id))
-    const next = typeof keys === 'string' ? [keys] : keys
-    setExpandedPlanIds([...(expandedPlanIds ?? defaults).filter((id) => !groupIds.has(id)), ...next])
+    // A collapse reports every open key, not only its own, so keep just this group's to avoid duplicating the others
+    const next = (typeof keys === 'string' ? [keys] : keys).filter((k) => groupIds.has(k))
+    setExpandedPlanIds(Array.from(new Set([...(expandedPlanIds ?? defaults).filter((id) => !groupIds.has(id)), ...next])))
   }
 
   async function createTemplate() {
@@ -1015,8 +1053,8 @@ export default function PlansOverviewPage() {
     const stats = planStats(plan, from, to)
     return {
       key: plan.id,
-      label: <PlanHeader plan={plan} stats={stats} splitView={splitView} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} />,
-      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} />,
+      label: <PlanHeader plan={plan} stats={stats} splitView={splitView} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} onLogTransaction={(p) => setLogTarget({ planId: p.id })} />,
+      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} onLogTransaction={(planId, budgetId) => setLogTarget({ planId, budgetId })} />,
     }
   }), [period, splitView, discardPlan, txActions])
 
@@ -1035,7 +1073,7 @@ export default function PlansOverviewPage() {
         onClose={() => setRecurrencePlanId(null)}
         onChanged={() => setReloadKey((k) => k + 1)}
       />
-      <LogTransactionModal open={logOpen} onClose={() => setLogOpen(false)} onLogged={() => setReloadKey((k) => k + 1)} />
+      <LogTransactionModal open={logTarget !== null} planId={logTarget?.planId} budgetId={logTarget?.budgetId} onClose={() => setLogTarget(null)} onLogged={() => setReloadKey((k) => k + 1)} />
       <ActivatePlanModal
         plan={activatePlan}
         onClose={() => setActivatePlan(null)}
@@ -1128,7 +1166,7 @@ export default function PlansOverviewPage() {
         )}
         <Col style={{ minWidth: 140, textAlign: 'right' }}>
           <Space>
-            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setLogOpen(true)}>
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setLogTarget({})}>
               Log transaction
             </Button>
             {mode === 'templates' && (
@@ -1253,78 +1291,6 @@ export default function PlansOverviewPage() {
               : <Text type="secondary">{mode === 'template' ? 'No occurrences found for this template.' : 'No plans found for this period.'}</Text>
           )}
 
-          {/* Period summary (period views only) */}
-          {mode !== 'active' && mode !== 'templates' && plans.length > 0 && (() => {
-            const all = plans.map((p) => planStats(p, period?.from, period?.to))
-            const totalPlanned = all.reduce((s, p) => s + p.planned, 0)
-            const totalActual = all.reduce((s, p) => s + p.actual, 0)
-            const totalReserved = all.reduce((s, p) => s + p.reserved, 0)
-            if (splitView) {
-              const tIncP = all.reduce((s, p) => s + p.incPlanned, 0)
-              const tExpP = all.reduce((s, p) => s + p.expPlanned, 0)
-              const tIncA = all.reduce((s, p) => s + p.incActual, 0)
-              const tExpA = all.reduce((s, p) => s + p.expActual, 0)
-              const tIncR = all.reduce((s, p) => s + p.incReserved, 0)
-              const tExpR = all.reduce((s, p) => s + p.expReserved, 0)
-              return (
-                <Row gutter={16} style={{ marginTop: 8 }}>
-                  <Col>
-                    <Statistic title="Income Planned" value={tIncP} precision={2} suffix="€"
-                      styles={{ content: { color: '#3f8600' } }} />
-                  </Col>
-                  <Col>
-                    <Statistic title="Income Actual" value={tIncA} precision={2} suffix="€"
-                      styles={{ content: { color: '#3f8600' } }} />
-                  </Col>
-                  <Col>
-                    <Statistic title="Income Reserved" value={tIncR} precision={2} suffix="€"
-                      styles={{ content: { color: '#3f8600' } }} />
-                  </Col>
-                  <Col>
-                    <Statistic title="Expense Planned" value={tExpP} precision={2} suffix="€"
-                      styles={{ content: { color: '#cf1322' } }} prefix="-" />
-                  </Col>
-                  <Col>
-                    <Statistic title="Expense Actual" value={tExpA} precision={2} suffix="€"
-                      styles={{ content: { color: '#cf1322' } }} prefix="-" />
-                  </Col>
-                  <Col>
-                    <Statistic title="Expense Reserved" value={tExpR} precision={2} suffix="€"
-                      styles={{ content: { color: '#cf1322' } }} prefix="-" />
-                  </Col>
-                </Row>
-              )
-            }
-            return (
-              <Row gutter={16} style={{ marginTop: 8 }}>
-                <Col>
-                  <Statistic title="Total Planned" value={Math.abs(totalPlanned)} precision={2} suffix="€"
-                    styles={{ content: { color: amountColor(totalPlanned) } }}
-                    prefix={totalPlanned < 0 ? '-' : undefined} />
-                </Col>
-                <Col>
-                  <Statistic title="Total Actual" value={Math.abs(totalActual)} precision={2} suffix="€"
-                    styles={{ content: { color: amountColor(totalActual) } }}
-                    prefix={totalActual < 0 ? '-' : undefined} />
-                </Col>
-                <Col>
-                  <Statistic title="Reserved" value={Math.abs(totalReserved)} precision={2} suffix="€"
-                    styles={{ content: { color: amountColor(totalReserved) } }}
-                    prefix={totalReserved < 0 ? '-' : undefined} />
-                </Col>
-                <Col>
-                  <Statistic
-                    title="Δ Actual vs Planned"
-                    value={Math.abs(totalActual - totalPlanned)}
-                    precision={2}
-                    suffix="€"
-                    styles={{ content: { color: totalActual > totalPlanned ? '#cf1322' : '#3f8600' } }}
-                    prefix={totalActual > totalPlanned ? '-' : '+'}
-                  />
-                </Col>
-              </Row>
-            )
-          })()}
         </>
       )}
     </Space>
