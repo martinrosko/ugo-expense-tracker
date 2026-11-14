@@ -20,6 +20,7 @@ type Target = { kind: 'execute' | 'edit' | 'editExecuted'; plan: RawPlan; tx: Tx
 
 function modalTx(t: Tx, amount: number | null): TxModalTx {
   return {
+    id: t.id,
     name: t.raw.name ?? t.raw.template?.name ?? null,
     plannedAmount: amount !== null ? String(amount) : null,
     fromAccountId: t.from?.id ?? null,
@@ -116,6 +117,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
         name: changed(body.name, tx.name),
         fromAccountId: changed(body.fromAccountId, tx.from?.id ?? null),
         toAccountId: changed(body.toAccountId, tx.to?.id ?? null),
+        tagIds: body.tagIds,
       }),
       'Transaction executed',
     )
@@ -131,6 +133,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
         fromAccountId: changed(body.fromAccountId, tx.from?.id ?? null),
         toAccountId: changed(body.toAccountId, tx.to?.id ?? null),
         dueDateConfig: changed(body.dueDateConfig, tx.dueDateConfig),
+        tagIds: body.tagIds,
       }),
       'Planned values updated',
     )
@@ -146,6 +149,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
         name: changed(body.name, tx.name),
         fromAccountId: changed(body.fromAccountId, tx.from?.id ?? null),
         toAccountId: changed(body.toAccountId, tx.to?.id ?? null),
+        tagIds: body.tagIds,
       }),
       'Transaction updated',
     )
@@ -161,18 +165,18 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
   const modals: ReactNode = (
     <>
       <TransactionModal
-        mode="execute" open={executeTarget !== null}
+        mode="execute" open={executeTarget !== null} editTags
         tx={executeTarget ? modalTx(executeTarget.tx, executeTarget.tx.plannedAmount) : null}
         accounts={executeTarget?.accounts ?? []} planIntervalType={executeTarget?.plan.intervalType ?? 'ONE_TIME'}
         onOk={submitExecute} onCancel={close}
       />
       <TransactionModal
-        open={editTarget !== null} tx={editTarget ? modalTx(editTarget.tx, editTarget.tx.plannedAmount) : null}
+        open={editTarget !== null} editTags tx={editTarget ? modalTx(editTarget.tx, editTarget.tx.plannedAmount) : null}
         accounts={editTarget?.accounts ?? []} planIntervalType={editTarget?.plan.intervalType ?? 'ONE_TIME'}
         onOk={submitEdit} onCancel={close}
       />
       <TransactionModal
-        mode="execute" open={executedTarget !== null}
+        mode="execute" open={executedTarget !== null} editTags
         tx={executedTarget ? modalTx(executedTarget.tx, executedTarget.tx.amount) : null}
         accounts={executedTarget?.accounts ?? []} planIntervalType={executedTarget?.plan.intervalType ?? 'ONE_TIME'}
         title="Edit Executed Transaction" okText="Save" onOk={submitEditExecuted} onCancel={close}

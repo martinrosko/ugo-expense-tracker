@@ -1,37 +1,42 @@
 import type { CsvRow } from '../csv/types'
-import type { RwTransaction, RwBudget, RwPlan, RwAccount, RwTag } from '../../types/resco'
+import type { AccountRef, Tx } from '../planTransactions'
+
+export type TagRef = { id: string; name: string }
+
+/** A planned, not yet executed transaction of an active plan. */
+export type Candidate = Tx & { planId: string; planLabel: string }
+
+/** Where a new transaction can be created: a plan's general area or one of its budgets. */
+export type Target = {
+  key: string
+  planId: string
+  budgetId: string | null
+  /** Null for the plan's general area */
+  budgetName: string | null
+  label: string
+  completed: boolean
+  startDate: string | null
+  endDate: string | null
+}
 
 export interface MatchResult {
   csvRow: CsvRow
   rowIndex: number
 
-  /**
-   * Best-scoring existing planned transaction (no bankticket yet).
-   * If set → we link the new bankticket to this transaction.
-   */
-  matchedTransaction?: RwTransaction
+  /** Best-scoring planned transaction; the row will execute it. */
+  matched?: Candidate
 
-  /** Budget of the matched transaction (resolved for display). */
-  matchedBudget?: RwBudget
+  /** Where a new transaction is created when nothing matched. */
+  target?: Target
 
-  /** Plan of the matched transaction (resolved for display). */
-  matchedPlan?: RwPlan
+  /** Best matching payment-partner account. */
+  partner?: AccountRef
 
-  /**
-   * If no transaction matched confidently, suggest this budget
-   * so the user can create a new transaction under it.
-   */
-  suggestedBudget?: RwBudget
-  suggestedPlan?: RwPlan
-
-  /** Best matching payment-partner account (from rw_partnername). */
-  suggestedPartner?: RwAccount
-
-  suggestedTags: RwTag[]
+  tags: TagRef[]
 
   /** 0–1 composite score (amount 50 % + date 30 % + partner 20 %). */
   confidence: number
 
-  /** True when a bankticket with this ticketid already exists in Resco. */
+  /** True when a bank ticket with this ticketId already exists for the account. */
   isDuplicate: boolean
 }

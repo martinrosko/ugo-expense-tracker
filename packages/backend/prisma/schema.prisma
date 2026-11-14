@@ -49,6 +49,7 @@ model Account {
   toTransactions    Transaction[] @relation("TxToAccount")
   defaultForBudgets Budget[]      @relation("BudgetDefaultAccount")
   defaultForPlans   Plan[]        @relation("PlanDefaultAccount")
+  tags              TagObject[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -82,6 +83,7 @@ model Plan {
   ownerId           String
   budgets           Budget[]
   transactions      Transaction[]
+  tags              TagObject[]
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
@@ -109,6 +111,7 @@ model Budget {
   templateId       String?
   instances        Budget[] @relation("BudgetFromTemplate")
   transactions     Transaction[]
+  tags             TagObject[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
@@ -166,7 +169,7 @@ model Transaction {
   template      Transaction?    @relation("TxFromTemplate", fields: [templateId], references: [id])
   templateId    String?
   instances     Transaction[]   @relation("TxFromTemplate")
-  tags          TransactionTag[]
+  tags          TagObject[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 }
@@ -186,19 +189,29 @@ model Tag {
   statusCode   Int              @default(0)
   owner        User             @relation(fields: [ownerId], references: [id])
   ownerId      String
-  transactions TransactionTag[]
+  objects      TagObject[]
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 }
 
-model TransactionTag {
-  id            String      @id @default(uuid())
-  transaction   Transaction @relation(fields: [transactionId], references: [id])
-  transactionId String
-  tag           Tag         @relation(fields: [tagId], references: [id])
+/// Assigns a tag to exactly one object: a transaction, plan, budget or account (enforced by a CHECK constraint).
+model TagObject {
+  id            String       @id @default(uuid())
+  tag           Tag          @relation(fields: [tagId], references: [id])
   tagId         String
-  amount        Decimal?    @db.Decimal(18, 4)
-  createdAt     DateTime    @default(now())
+  transaction   Transaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  transactionId String?
+  plan          Plan?        @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId        String?
+  budget        Budget?      @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  budgetId      String?
+  account       Account?     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  accountId     String?
+  amount        Decimal?     @db.Decimal(18, 4)
+  createdAt     DateTime     @default(now())
 
   @@unique([transactionId, tagId])
+  @@unique([planId, tagId])
+  @@unique([budgetId, tagId])
+  @@unique([accountId, tagId])
 }

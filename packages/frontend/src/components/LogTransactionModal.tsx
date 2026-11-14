@@ -31,6 +31,7 @@ const changed = <T,>(next: T | null, current: T | null) => (next !== null && nex
 
 function modalTx(t: Tx, amount: number | null): TxModalTx {
   return {
+    id: t.id,
     name: t.raw.name ?? t.raw.template?.name ?? null,
     plannedAmount: amount !== null ? String(amount) : null,
     fromAccountId: t.from?.id ?? null,
@@ -134,7 +135,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
 
   const extra = (
     <Space direction="vertical" style={{ width: '100%' }} size={12}>
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
       {!planId && (
         <div>
           <Text strong>Plan</Text>
@@ -167,6 +168,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
           name: changed(body.name, selected.name),
           fromAccountId: changed(body.fromAccountId, selected.from?.id ?? null),
           toAccountId: changed(body.toAccountId, selected.to?.id ?? null),
+          tagIds: body.tagIds,
         })
       } else {
         await apiClient.post('/api/transactions', {
@@ -177,6 +179,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
           fromAccountId: body.fromAccountId,
           toAccountId: body.toAccountId,
           budgetId: body.budgetId,
+          tagIds: body.tagIds,
           planId: body.budgetId ? null : plan.id,
           statusCode: completed ? 3 : 1,
           stateCode: completed ? 1 : 0,
@@ -195,6 +198,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
     <TransactionModal
       mode="execute"
       open={open}
+      editTags
       tx={selected ? modalTx(selected, selected.executedOn ? selected.amount : selected.plannedAmount) : null}
       accounts={accounts}
       planIntervalType={plan?.intervalType ?? 'ONE_TIME'}

@@ -7,7 +7,7 @@ function getAuthHeader(): string {
 }
 
 const rescoClient = axios.create({
-  baseURL: '/api',
+  baseURL: '/resco',
 })
 
 rescoClient.interceptors.request.use((config) => {

@@ -312,7 +312,7 @@ export default function PartnerBalancePage() {
         </div>
       )}
 
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
 
       {!loading && !error && selectedIds.length === 0 && (
         <Empty description="Select one or more partners to see their balance over time" />

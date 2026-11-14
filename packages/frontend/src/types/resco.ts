@@ -109,6 +109,13 @@ export interface RwTag {
   rw_color?: string
 }
 
+/** Links a tag to a transaction, plan or budget. */
+export interface RwTagObject {
+  id: string
+  __rw_objectid_id?: string
+  __rw_tagid_id?: string
+}
+
 /** Junction record: assigns a tag to a transaction with optional partial amount. */
 export interface RwTransactionTag {
   id?: string

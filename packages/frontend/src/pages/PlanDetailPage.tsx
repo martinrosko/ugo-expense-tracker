@@ -102,7 +102,7 @@ export default function PlanDetailPage() {
   const { actionsFor, modals } = usePlanTxActions(load)
 
   if (loading) return <div style={{ textAlign: 'center', padding: 64 }}><Spin size="large" /></div>
-  if (error || !plan) return <Alert type="error" message={error ?? 'Plan not found'} showIcon />
+  if (error || !plan) return <Alert type="error" title={error ?? 'Plan not found'} showIcon />
 
   const completed = plan.statusCode === 3
   const active = plan.statusCode === 1

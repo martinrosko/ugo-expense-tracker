@@ -1,10 +1,10 @@
-﻿import { useState } from 'react'
+import { useState } from 'react'
 import { Button, Card, Typography, Space, Spin, Alert, Tag, message } from 'antd'
 import { ApiOutlined, ImportOutlined } from '@ant-design/icons'
 import axios from 'axios'
 import rescoClient from '../api/rescoClient'
 import apiClient from '../api/apiClient'
-import type { RwAccount, RwBudget, RwPlan, RwTransaction } from '../types/resco'
+import type { RwAccount, RwBudget, RwPlan, RwTag, RwTagObject, RwTransaction } from '../types/resco'
 import { AccountType, PlanIntervalType, TransactionType } from '../types/resco'
 
 function extractError(err: unknown): string {
@@ -44,6 +44,7 @@ const ENTITIES = [
   { name: 'rw_plan', label: 'Plans' },
   { name: 'rw_transaction', label: 'Transactions' },
   { name: 'rw_tag', label: 'Tags' },
+  { name: 'rw_tagobject', label: 'Tag Objects' },
   { name: 'rw_transactiontag', label: 'Transaction Tags' },
 ]
 
@@ -348,6 +349,90 @@ export default function RescoTestPage() {
       messageApi.error(msg)
     }
   }
+  async function importTags() {
+    setImport('rw_tag', true)
+    try {
+      const rescoTags = await fetchAllResco<RwTag>('rw_tag', { $select: 'id,name,rw_color' })
+
+      const existingRes = await apiClient.get<{ id: string }[]>('/api/tags')
+      const existingIds = new Set(existingRes.data.map((t) => t.id))
+
+      const toImport = rescoTags.filter((t) => !existingIds.has(t.id))
+      let skipped = 0
+      for (const t of toImport) {
+        try {
+          await apiClient.post('/api/tags', { id: t.id, name: t.name, color: t.rw_color ?? null })
+        } catch (err) {
+          // 409 = empty or duplicate name
+          if (axios.isAxiosError(err) && err.response?.status === 409) skipped++
+          else throw err
+        }
+      }
+
+      const msg = `Imported ${toImport.length - skipped} tag(s). ${existingIds.size} already existed${skipped ? `, ${skipped} skipped (empty or duplicate name)` : ''}.`
+      setImport('rw_tag', false, msg)
+      messageApi.success(msg)
+    } catch (err: unknown) {
+      const msg = extractError(err)
+      setImport('rw_tag', false, `Error: ${msg}`)
+      messageApi.error(msg)
+    }
+  }
+
+  async function importTagObjects() {
+    setImport('rw_tagobject', true)
+    try {
+      const rescoLinks = await fetchAllResco<RwTagObject>('rw_tagobject', { $select: 'id,__rw_objectid_id,__rw_tagid_id' })
+
+      const [txRes, planRes, budgetRes, accountRes, tagsRes] = await Promise.all([
+        apiClient.get<{ id: string }[]>('/api/transactions'),
+        apiClient.get<{ id: string }[]>('/api/plans'),
+        apiClient.get<{ id: string }[]>('/api/budgets'),
+        apiClient.get<{ id: string }[]>('/api/accounts'),
+        apiClient.get<{ id: string }[]>('/api/tags'),
+      ])
+      // Resco ids are reused in Ugo, so an id identifies the kind of object it belongs to
+      const typeById = new Map<string, string>([
+        ...accountRes.data.map((o) => [o.id, 'account'] as const),
+        ...budgetRes.data.map((o) => [o.id, 'budget'] as const),
+        ...planRes.data.map((o) => [o.id, 'plan'] as const),
+        ...txRes.data.map((o) => [o.id, 'transaction'] as const),
+      ])
+      const backendTagIds = new Set(tagsRes.data.map((t) => t.id))
+
+      let imported = 0
+      let existed = 0
+      let missingObject = 0
+      let missingTag = 0
+      const importedByType: Record<string, number> = {}
+      for (const l of rescoLinks) {
+        const objectId = l.__rw_objectid_id
+        const tagId = l.__rw_tagid_id
+        const type = objectId ? typeById.get(objectId) : undefined
+        if (!objectId || !type) { missingObject++; continue }
+        if (!tagId || !backendTagIds.has(tagId)) { missingTag++; continue }
+        try {
+          await apiClient.post(`/api/tags/objects/${type}/${objectId}`, { id: l.id, tagId })
+          imported++
+          importedByType[type] = (importedByType[type] ?? 0) + 1
+        } catch (err) {
+          if (axios.isAxiosError(err) && err.response?.status === 409) existed++
+          else throw err
+        }
+      }
+
+      const byType = Object.entries(importedByType).map(([t, n]) => `${n} ${t}`).join(', ')
+      const skipped = [missingObject && `${missingObject} object not imported`, missingTag && `${missingTag} tag not imported`].filter(Boolean).join(', ')
+      const msg = `Imported ${imported} tag link(s)${byType ? ` (${byType})` : ''}. ${existed} already existed${skipped ? `; skipped: ${skipped}` : ''}.`
+      setImport('rw_tagobject', false, msg)
+      messageApi.success(msg)
+    } catch (err: unknown) {
+      const msg = extractError(err)
+      setImport('rw_tagobject', false, `Error: ${msg}`)
+      messageApi.error(msg)
+    }
+  }
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
       {contextHolder}
@@ -424,6 +509,26 @@ export default function RescoTestPage() {
                   >
                     Import all to Ugo
                   </Button>
+                ) : name === 'rw_tag' ? (
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<ImportOutlined />}
+                    loading={importStates['rw_tag']?.importing}
+                    onClick={importTags}
+                  >
+                    Import all to Ugo
+                  </Button>
+                ) : name === 'rw_tagobject' ? (
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<ImportOutlined />}
+                    loading={importStates['rw_tagobject']?.importing}
+                    onClick={importTagObjects}
+                  >
+                    Import all to Ugo
+                  </Button>
                 ) : (
                   <Button
                     type="primary"
@@ -439,14 +544,14 @@ export default function RescoTestPage() {
           >
             {name === 'rw_account' && importStates['rw_account']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin tip="Fetching from Resco and saving to Ugoâ€¦" />
+                <Spin description="Fetching from Resco and saving to Ugoâ€¦" />
               </div>
             )}
             {name === 'rw_account' && !importStates['rw_account']?.importing && importStates['rw_account']?.result && (
               <Alert
                 type={importStates['rw_account'].result.startsWith('Error') ? 'error' : 'success'}
                 showIcon
-                message={importStates['rw_account'].result}
+                title={importStates['rw_account'].result}
               />
             )}
             {name === 'rw_account' && !importStates['rw_account']?.importing && !importStates['rw_account']?.result && (
@@ -454,14 +559,14 @@ export default function RescoTestPage() {
             )}
             {name === 'rw_plan' && importStates['rw_plan']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin tip="Fetching plans from Resco, resolving accounts, saving to Ugoâ€¦" />
+                <Spin description="Fetching plans from Resco, resolving accounts, saving to Ugoâ€¦" />
               </div>
             )}
             {name === 'rw_plan' && !importStates['rw_plan']?.importing && importStates['rw_plan']?.result && (
               <Alert
                 type={importStates['rw_plan'].result.startsWith('Error') ? 'error' : 'success'}
                 showIcon
-                message={importStates['rw_plan'].result}
+                title={importStates['rw_plan'].result}
               />
             )}
             {name === 'rw_plan' && !importStates['rw_plan']?.importing && !importStates['rw_plan']?.result && (
@@ -469,14 +574,14 @@ export default function RescoTestPage() {
             )}
             {name === 'rw_budget' && importStates['rw_budget']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin tip="Fetching budgets from Resco, saving to Ugoâ€¦" />
+                <Spin description="Fetching budgets from Resco, saving to Ugoâ€¦" />
               </div>
             )}
             {name === 'rw_budget' && !importStates['rw_budget']?.importing && importStates['rw_budget']?.result && (
               <Alert
                 type={importStates['rw_budget'].result.startsWith('Error') ? 'error' : 'success'}
                 showIcon
-                message={importStates['rw_budget'].result}
+                title={importStates['rw_budget'].result}
               />
             )}
             {name === 'rw_budget' && !importStates['rw_budget']?.importing && !importStates['rw_budget']?.result && (
@@ -484,28 +589,58 @@ export default function RescoTestPage() {
             )}
             {name === 'rw_transaction' && importStates['rw_transaction']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin tip="Fetching transactions from Resco, saving to Ugoâ€¦" />
+                <Spin description="Fetching transactions from Resco, saving to Ugoâ€¦" />
               </div>
             )}
             {name === 'rw_transaction' && !importStates['rw_transaction']?.importing && importStates['rw_transaction']?.result && (
               <Alert
                 type={importStates['rw_transaction'].result.startsWith('Error') ? 'error' : 'success'}
                 showIcon
-                message={importStates['rw_transaction'].result}
+                title={importStates['rw_transaction'].result}
               />
             )}
             {name === 'rw_transaction' && !importStates['rw_transaction']?.importing && !importStates['rw_transaction']?.result && (
               <Text type="secondary">Click "Import all to Ugo" to fetch all transactions from Resco. Plans and budgets must be imported first.</Text>
             )}
-            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && state.loading && (
+            {name === 'rw_tag' && importStates['rw_tag']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin tip="Fetching from Rescoâ€¦" />
+                <Spin description="Fetching tags from Resco, saving to Ugo…" />
               </div>
             )}
-            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && state.error && (
-              <Alert type="error" showIcon message="Request failed" description={state.error} />
+            {name === 'rw_tag' && !importStates['rw_tag']?.importing && importStates['rw_tag']?.result && (
+              <Alert
+                type={importStates['rw_tag'].result.startsWith('Error') ? 'error' : 'success'}
+                showIcon
+                title={importStates['rw_tag'].result}
+              />
             )}
-            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && state.data !== null && !state.loading && (
+            {name === 'rw_tag' && !importStates['rw_tag']?.importing && !importStates['rw_tag']?.result && (
+              <Text type="secondary">Click "Import all to Ugo" to fetch all tags from Resco and save them to the database.</Text>
+            )}
+            {name === 'rw_tagobject' && importStates['rw_tagobject']?.importing && (
+              <div style={{ textAlign: 'center', padding: '16px 0' }}>
+                <Spin description="Fetching tag links from Resco, saving to Ugo..." />
+              </div>
+            )}
+            {name === 'rw_tagobject' && !importStates['rw_tagobject']?.importing && importStates['rw_tagobject']?.result && (
+              <Alert
+                type={importStates['rw_tagobject'].result.startsWith('Error') ? 'error' : 'success'}
+                showIcon
+                title={importStates['rw_tagobject'].result}
+              />
+            )}
+            {name === 'rw_tagobject' && !importStates['rw_tagobject']?.importing && !importStates['rw_tagobject']?.result && (
+              <Text type="secondary">Click "Import all to Ugo" to link tags to transactions, plans, budgets and accounts. These and the tags must be imported first.</Text>
+            )}
+            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && name !== 'rw_tag' && name !== 'rw_tagobject' && state.loading && (
+              <div style={{ textAlign: 'center', padding: '16px 0' }}>
+                <Spin description="Fetching from Rescoâ€¦" />
+              </div>
+            )}
+            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && name !== 'rw_tag' && name !== 'rw_tagobject' && state.error && (
+              <Alert type="error" showIcon title="Request failed" description={state.error} />
+            )}
+            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && name !== 'rw_tag' && name !== 'rw_tagobject' && state.data !== null && !state.loading && (
               state.data.length === 0 ? (
                 <Text type="secondary">No records found.</Text>
               ) : (
@@ -526,7 +661,7 @@ export default function RescoTestPage() {
                 </pre>
               )
             )}
-            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && !state.loading && !state.error && state.data === null && (
+            {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && name !== 'rw_tag' && name !== 'rw_tagobject' && !state.loading && !state.error && state.data === null && (
               <Text type="secondary">Click "Load 5" to fetch records on demand.</Text>
             )}
           </Card>

@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Button, DatePicker, Divider, Form, Input, InputNumber, Modal, Radio, Select, Space, Typography } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { DatePicker, Divider, Form, Input, InputNumber, Modal, Radio, Select, Space, Tag, Typography } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
+import apiClient from '../api/apiClient'
+import { TagsField } from './TagPicker'
 
 const { Text } = Typography
 
@@ -13,6 +14,8 @@ type AccountRef = { id: string; name: string; type: string }
 
 /** The part of a transaction the dialog needs; template values are used as fallback for the due day. */
 export type TxModalTx = {
+  /** Used to load the transaction's tags */
+  id?: string | null
   name: string | null
   plannedAmount: string | null
   fromAccountId: string | null
@@ -37,6 +40,8 @@ export type TxModalBody = {
   executedOn?: string
   /** Execute mode with a budget list only */
   budgetId?: string | null
+  /** Only when editTags is set */
+  tagIds?: string[]
 }
 
 const WEEKDAY_BITMASK: Record<string, number> = { mon: 1, tue: 2, wed: 4, thu: 8, fri: 16, sat: 32, sun: 64 }
@@ -74,7 +79,7 @@ const MONTH_OPTIONS = [
  * Add/edit a planned transaction ('plan') or log it as executed ('execute').
  * Execute mode asks for the execution date instead of the due day; with tx = null it logs an unplanned transaction.
  */
-export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, onOk, onCancel }: {
+export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, editTags, initialTagIds, onOk, onCancel }: {
   open: boolean
   tx: TxModalTx | null
   accounts: AccountRef[]
@@ -92,6 +97,10 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   title?: string
   okText?: string
   okDisabled?: boolean
+  /** Shows a tag picker and returns tagIds; the caller must persist them. Otherwise tags are shown read-only. */
+  editTags?: boolean
+  /** Preselected tags when the transaction has no id to load them from */
+  initialTagIds?: string[]
   onOk: (body: TxModalBody) => Promise<void>
   onCancel: () => void
 }) {
@@ -103,6 +112,33 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   const [dueDirection, setDueDirection] = useState<'from_start' | 'from_end'>('from_start')
   const [dueWeekday, setDueWeekday] = useState(1)  // bitmask for weekly
   const [dueMonth, setDueMonth] = useState(0)       // 0-11 offset for yearly
+  const [tags, setTags] = useState<{ id: string; name: string }[]>([])
+  const [allTags, setAllTags] = useState<{ id: string; name: string }[]>([])
+  const [tagIds, setTagIds] = useState<string[]>([])
+  const txId = tx?.id ?? null
+
+  useEffect(() => {
+    setTags([])
+    setTagIds(initialTagIds ?? [])
+    if (!open) return
+    let cancelled = false
+    if (editTags) {
+      apiClient.get<{ id: string; name: string }[]>('/api/tags')
+        .then((res) => { if (!cancelled) setAllTags(res.data) })
+        .catch(() => undefined)
+    }
+    if (txId) {
+      apiClient.get<{ tags?: { tag: { id: string; name: string } }[] }>(`/api/transactions/${txId}`)
+        .then((res) => {
+          if (cancelled) return
+          const loaded = (res.data.tags ?? []).map((t) => t.tag)
+          setTags(loaded)
+          setTagIds(loaded.map((t) => t.id))
+        })
+        .catch(() => undefined) // unsaved transactions have no tags to load
+    }
+    return () => { cancelled = true }
+  }, [open, txId, editTags]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const execute = mode === 'execute'
   const assetAccounts = accounts.filter((a) => ASSET_TYPES.has(a.type))
@@ -198,6 +234,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
         dueDateConfig: !execute && planIntervalType !== 'ONE_TIME' ? buildDueDateConfig() : null,
         ...(execute ? { executedOn: (values.executedOn as Dayjs).hour(12).toISOString() } : {}),
         ...(execute && budgets ? { budgetId: (values.budgetId as string | null) ?? null } : {}),
+        ...(editTags ? { tagIds } : {}),
       })
     } finally { setSaving(false) }
   }
@@ -332,13 +369,25 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
           </>
         )}
 
-        {/* Tags placeholder */}
-        <Divider style={{ margin: '4px 0' }} />
-        <div>
-          <Text strong>Tags</Text>
-          <br />
-          <Button size="small" icon={<PlusOutlined />} disabled style={{ marginTop: 8 }}>Add Tag</Button>
-        </div>
+        {(editTags || tags.length > 0) && (
+          <>
+            <Divider style={{ margin: '4px 0' }} />
+            <div>
+              <Text strong>Tags</Text>
+              {editTags ? (
+                <div style={{ marginTop: 8 }}>
+                  <TagsField tags={allTags} value={tagIds} onChange={setTagIds} />
+                </div>
+              ) : (
+                <div style={{ marginTop: 8 }}>
+                  <Space size={[4, 4]} wrap>
+                    {tags.map((t) => <Tag key={t.id}>{t.name}</Tag>)}
+                  </Space>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </Space>
     </Modal>
   )

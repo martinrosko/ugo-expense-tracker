@@ -633,7 +633,7 @@ export default function TransactionsPage() {
         </div>
       )}
 
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
 
       {!loading && !error && viewMode === 'chart' && (
         <div>

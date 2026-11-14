@@ -98,10 +98,14 @@ export interface Tag {
   ownerId: string
 }
 
-export interface TransactionTag {
+/** Assigns a tag to exactly one object: a transaction, plan, budget or account. */
+export interface TagObject {
   id: string
-  transactionId: string
   tagId: string
+  transactionId?: string
+  planId?: string
+  budgetId?: string
+  accountId?: string
   amount?: number
 }
 

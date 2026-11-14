@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons'
 import apiClient from '../api/apiClient'
 import TransactionModal from '../components/TransactionModal'
+import { TagsField, useTagSelection } from '../components/TagPicker'
 
 const { Title, Text } = Typography
 
@@ -55,6 +56,8 @@ type Budget = {
   templateId: string | null
   template: BudgetTemplate | null
   transactions: Transaction[]
+  /** Set once the user edited the budget's tags; saved with the other changes */
+  tagIds?: string[]
 }
 
 type Plan = {
@@ -121,11 +124,12 @@ type TxSaveBody = {
 
 // ─── Budget modal ─────────────────────────────────────────────────────────────
 
-type BudgetSaveBody = { name: string | null; amount: string | null }
+type BudgetSaveBody = { name: string | null; amount: string | null; tagIds?: string[] }
 
-function BudgetModal({ open, budget, onOk, onCancel }: {
+function BudgetModal({ open, budget, withTags, onOk, onCancel }: {
   open: boolean
   budget: Budget | null         // null = add new
+  withTags: boolean
   onOk: (body: BudgetSaveBody) => Promise<void>
   onCancel: () => void
 }) {
@@ -133,6 +137,11 @@ function BudgetModal({ open, budget, onOk, onCancel }: {
   const [saving, setSaving] = useState(false)
   const isInstance = !!(budget?.templateId)
   const tpl = budget?.template ?? null
+  const tagSel = useTagSelection(
+    open && withTags,
+    budget && !isTemporaryId(budget.id) ? { type: 'budget', id: budget.id } : undefined,
+    budget?.tagIds,
+  )
 
   useEffect(() => {
     if (!open) return
@@ -152,6 +161,7 @@ function BudgetModal({ open, budget, onOk, onCancel }: {
       await onOk({
         name: values.name || null,
         amount: values.amount != null ? String(values.amount) : null,
+        ...(withTags && tagSel.dirty ? { tagIds: tagSel.tagIds } : {}),
       })
     } finally {
       setSaving(false)
@@ -173,7 +183,7 @@ function BudgetModal({ open, budget, onOk, onCancel }: {
             type="info"
             showIcon
             style={{ marginBottom: 16, fontSize: 12 }}
-            message="Inherited values shown as placeholders. Clear a field to fall back to the template value."
+            title="Inherited values shown as placeholders. Clear a field to fall back to the template value."
           />
         )}
         <Form.Item
@@ -197,6 +207,48 @@ function BudgetModal({ open, budget, onOk, onCancel }: {
             suffix="€"
             placeholder={isInstance && tpl?.amount ? `Inherited: ${fmtAmount(tpl.amount)}` : '0.00'}
           />
+        </Form.Item>
+        {withTags && (
+          <Form.Item label="Tags" style={{ marginBottom: 0 }}>
+            <TagsField tags={tagSel.allTags} value={tagSel.tagIds} onChange={tagSel.setTagIds} />
+          </Form.Item>
+        )}
+      </Form>
+    </Modal>
+  )
+}
+
+// ─── Plan template details modal ────────────────────────────────────────────────────
+
+function PlanDetailsModal({ open, planId, name, onOk, onCancel }: {
+  open: boolean
+  planId: string
+  name: string | null
+  onOk: (name: string, tagIds: string[] | undefined) => Promise<boolean>
+  onCancel: () => void
+}) {
+  const [form] = Form.useForm<{ name: string }>()
+  const [saving, setSaving] = useState(false)
+  const tagSel = useTagSelection(open, { type: 'plan', id: planId })
+
+  async function handleOk() {
+    const values = await form.validateFields()
+    setSaving(true)
+    try {
+      await onOk(values.name.trim(), tagSel.dirty ? tagSel.tagIds : undefined)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open={open} title="Edit plan template" okText="Save" onOk={handleOk} onCancel={onCancel} confirmLoading={saving} destroyOnClose>
+      <Form form={form} layout="vertical" style={{ marginTop: 16 }} initialValues={{ name: name ?? '' }}>
+        <Form.Item name="name" label="Name" rules={[{ required: true, whitespace: true, message: 'Enter a name' }]}>
+          <Input autoFocus />
+        </Form.Item>
+        <Form.Item label="Tags" style={{ marginBottom: 0 }}>
+          <TagsField tags={tagSel.allTags} value={tagSel.tagIds} onChange={tagSel.setTagIds} />
         </Form.Item>
       </Form>
     </Modal>
@@ -362,6 +414,7 @@ export default function PlanEditPage() {
 
   const [txModal, setTxModal] = useState<TxModalState>({ open: false, tx: null, planId: null, budgetId: null })
   const [budgetModal, setBudgetModal] = useState<BudgetModalState>({ open: false, budget: null })
+  const [planModalOpen, setPlanModalOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -493,6 +546,23 @@ export default function PlanEditPage() {
     setPlan({ ...plan, budgets: plan.budgets.filter((candidate) => candidate.id !== budget.id) })
   }
 
+  // Saved immediately, independent of the draft budgets/transactions
+  async function savePlanDetails(name: string, tagIds: string[] | undefined): Promise<boolean> {
+    try {
+      await apiClient.patch(`/api/plans/${id}`, { name })
+      if (tagIds) await apiClient.put(`/api/tags/objects/plan/${id}`, { tagIds })
+      setPlan((current) => (current ? { ...current, name } : current))
+      setOriginalPlan((current) => (current ? { ...current, name } : current))
+      setPlanModalOpen(false)
+      messageApi.success('Plan template updated')
+      return true
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string; error?: string } }; message?: string }
+      messageApi.error(e?.response?.data?.message ?? e?.response?.data?.error ?? e?.message ?? 'Save failed')
+      return false
+    }
+  }
+
   function txBody(tx: Transaction): TxSaveBody {
     return {
       name: tx.name,
@@ -528,12 +598,18 @@ export default function PlanEditPage() {
         if (originalBudget && !sameSaveBody({ name: budget.name, amount: budget.amount }, { name: originalBudget.name, amount: originalBudget.amount })) {
           await apiClient.patch(`/api/budgets/${budget.id}`, { name: budget.name, amount: budget.amount })
         }
+        if (originalBudget && budget.tagIds) {
+          await apiClient.put(`/api/tags/objects/budget/${budget.id}`, { tagIds: budget.tagIds })
+        }
       }
 
       const budgetIds = new Map<string, string>()
       for (const budget of plan.budgets.filter((candidate) => isTemporaryId(candidate.id))) {
         const response = await apiClient.post<Budget>('/api/budgets', { name: budget.name, amount: budget.amount, planId: id })
         budgetIds.set(budget.id, response.data.id)
+        if (budget.tagIds?.length) {
+          await apiClient.put(`/api/tags/objects/budget/${response.data.id}`, { tagIds: budget.tagIds })
+        }
       }
       for (const tx of draftTransactions) {
         if (isTemporaryId(tx.id)) {
@@ -574,7 +650,7 @@ export default function PlanEditPage() {
   // ─── Render ───────────────────────────────────────────────────────────────────
 
   if (loading) return <div style={{ textAlign: 'center', padding: 64 }}><Spin size="large" /></div>
-  if (error || !plan) return <Alert type="error" message={error ?? 'Plan not found'} showIcon />
+  if (error || !plan) return <Alert type="error" title={error ?? 'Plan not found'} showIcon />
 
   // Instances in terminal states cannot be modified
   const isLocked = !plan.isTemplate && (plan.statusCode === 3 || plan.statusCode === 4)
@@ -634,6 +710,11 @@ export default function PlanEditPage() {
           </Tooltip>
         )}
         <Title level={4} style={{ margin: 0 }}>{effectiveName}</Title>
+        {plan.isTemplate && !isLocked && (
+          <Tooltip title="Edit name and tags">
+            <Button type="text" size="small" icon={<EditOutlined />} onClick={() => setPlanModalOpen(true)} />
+          </Tooltip>
+        )}
         <Tag color="purple">{plan.intervalType}</Tag>
         {plan.isTemplate
           ? <><Tag color="volcano">TEMPLATE</Tag><Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag></>
@@ -800,8 +881,16 @@ export default function PlanEditPage() {
       <BudgetModal
         open={budgetModal.open}
         budget={budgetModal.budget}
+        withTags={plan.isTemplate}
         onOk={saveBudget}
         onCancel={() => setBudgetModal({ open: false, budget: null })}
+      />
+      <PlanDetailsModal
+        open={planModalOpen}
+        planId={plan.id}
+        name={plan.name}
+        onOk={savePlanDetails}
+        onCancel={() => setPlanModalOpen(false)}
       />
       <Modal
         open={exitConfirmOpen}

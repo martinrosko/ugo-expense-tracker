@@ -1,7 +1,9 @@
 import { Router } from 'express'
+import type { Prisma } from '@prisma/client'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
 import { isTemplateTransaction, propagateTransactionCreated, removeTemplateTransaction } from '../services/templateSync.js'
+import { replaceObjectTags } from '../services/tagObjects.js'
 
 export const transactionsRouter = Router()
 
@@ -12,6 +14,10 @@ const ownerFilter = (ownerId: string) => ({
     { plan: { ownerId } },
   ],
 })
+
+// Makes the transaction's tags equal to tagIds; a missing tagIds leaves them untouched
+const replaceTags = (client: Prisma.TransactionClient, transactionId: string, ownerId: string, tagIds: unknown) =>
+  replaceObjectTags(client, 'transaction', transactionId, ownerId, tagIds)
 
 // GET /api/transactions?budgetId=xxx&planId=xxx&unmatched=true&from=YYYY-MM-DD&to=YYYY-MM-DD&executed=true
 transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
@@ -111,12 +117,10 @@ transactionsRouter.post('/', async (req: AuthenticatedRequest, res) => {
         templateId,
         stateCode,
         statusCode,
-        tags: tagIds?.length
-          ? { create: tagIds.map((tagId: string) => ({ tagId })) }
-          : undefined,
       },
       include: { tags: { include: { tag: true } } },
     })
+    await replaceTags(client, created.id, req.user!.sub, tagIds)
     await propagateTransactionCreated(client, created)
     return created
   })
@@ -130,25 +134,28 @@ transactionsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
     where: { id, ...ownerFilter(req.user!.sub) },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  const { name, amount, plannedAmount, plannedOn, executedOn, dueDateConfig, type, bankTicketId, fromAccountId, toAccountId, templateId, stateCode, statusCode } = req.body
-  const tx = await db.transaction.update({
-    where: { id },
-    data: {
-      name,
-      amount,
-      plannedAmount,
-      plannedOn: plannedOn ? new Date(plannedOn) : undefined,
-      executedOn: executedOn ? new Date(executedOn) : undefined,
-      dueDateConfig,
-      type,
-      bankTicketId,
-      fromAccountId,
-      toAccountId,
-      templateId,
-      stateCode,
-      statusCode,
-    },
-    include: { tags: { include: { tag: true } } },
+  const { name, amount, plannedAmount, plannedOn, executedOn, dueDateConfig, type, bankTicketId, fromAccountId, toAccountId, templateId, stateCode, statusCode, tagIds } = req.body
+  const tx = await db.$transaction(async (client) => {
+    await replaceTags(client, id, req.user!.sub, tagIds)
+    return client.transaction.update({
+      where: { id },
+      data: {
+        name,
+        amount,
+        plannedAmount,
+        plannedOn: plannedOn ? new Date(plannedOn) : undefined,
+        executedOn: executedOn ? new Date(executedOn) : undefined,
+        dueDateConfig,
+        type,
+        bankTicketId,
+        fromAccountId,
+        toAccountId,
+        templateId,
+        stateCode,
+        statusCode,
+      },
+      include: { tags: { include: { tag: true } } },
+    })
   })
   res.json(tx)
 })
@@ -162,7 +169,7 @@ transactionsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
   await db.$transaction(async (tx) => {
     if (await isTemplateTransaction(tx, existing)) await removeTemplateTransaction(tx, existing)
-    await tx.transactionTag.deleteMany({ where: { transactionId: id } })
+    await tx.tagObject.deleteMany({ where: { transactionId: id } })
     await tx.transaction.delete({ where: { id } })
   })
   res.status(204).end()
@@ -186,16 +193,19 @@ transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) =
   const amount = Number(req.body?.amount ?? existing.plannedAmount ?? existing.template?.plannedAmount)
   if (!Number.isFinite(amount) || amount <= 0) { res.status(400).json({ error: 'A positive amount is required' }); return }
 
-  const tx = await db.transaction.update({
-    where: { id },
-    data: {
-      executedOn,
-      amount: amount.toFixed(4),
-      // Values changed while executing become overrides of the template values
-      name: typeof req.body?.name === 'string' ? req.body.name : undefined,
-      fromAccountId: typeof req.body?.fromAccountId === 'string' ? req.body.fromAccountId : undefined,
-      toAccountId: typeof req.body?.toAccountId === 'string' ? req.body.toAccountId : undefined,
-    },
+  const tx = await db.$transaction(async (client) => {
+    await replaceTags(client, id, req.user!.sub, req.body?.tagIds)
+    return client.transaction.update({
+      where: { id },
+      data: {
+        executedOn,
+        amount: amount.toFixed(4),
+        // Values changed while executing become overrides of the template values
+        name: typeof req.body?.name === 'string' ? req.body.name : undefined,
+        fromAccountId: typeof req.body?.fromAccountId === 'string' ? req.body.fromAccountId : undefined,
+        toAccountId: typeof req.body?.toAccountId === 'string' ? req.body.toAccountId : undefined,
+      },
+    })
   })
   res.json(tx)
 })
@@ -214,7 +224,7 @@ transactionsRouter.post('/:id/unexecute', async (req: AuthenticatedRequest, res)
   if (!existing.executedOn) { res.status(409).json({ error: 'Transaction is not executed' }); return }
   if (!existing.templateId) { res.status(409).json({ error: 'Only template transactions can be discarded; delete it instead' }); return }
   const tx = await db.$transaction(async (client) => {
-    await client.transactionTag.deleteMany({ where: { transactionId: id } })
+    await client.tagObject.deleteMany({ where: { transactionId: id } })
     return client.transaction.update({ where: { id }, data: { executedOn: null, amount: null, bankTicketId: null } })
   })
   res.json(tx)
@@ -227,9 +237,16 @@ transactionsRouter.post('/:id/tags', async (req: AuthenticatedRequest, res) => {
     where: { id, ...ownerFilter(req.user!.sub) },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  const { tagId, amount } = req.body
-  const tag = await db.transactionTag.create({
-    data: { transactionId: id, tagId, amount },
+  const { id: linkId, tagId, amount } = req.body
+  const ownTag = await db.tag.findFirst({ where: { id: String(tagId), ownerId: req.user!.sub }, select: { id: true } })
+  if (!ownTag) { res.status(404).json({ error: 'Tag not found' }); return }
+  const duplicate = await db.tagObject.findFirst({
+    where: { OR: [{ transactionId: id, tagId: ownTag.id }, ...(linkId ? [{ id: String(linkId) }] : [])] },
+    select: { id: true },
+  })
+  if (duplicate) { res.status(409).json({ error: 'Tag is already assigned' }); return }
+  const tag = await db.tagObject.create({
+    data: { ...(linkId ? { id: String(linkId) } : {}), transactionId: id, tagId: ownTag.id, amount },
     include: { tag: true },
   })
   res.status(201).json(tag)
@@ -243,7 +260,7 @@ transactionsRouter.delete('/:id/tags/:tagId', async (req: AuthenticatedRequest, 
     where: { id, ...ownerFilter(req.user!.sub) },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  await db.transactionTag.deleteMany({
+  await db.tagObject.deleteMany({
     where: { transactionId: id, tagId },
   })
   res.status(204).end()
@@ -353,7 +370,7 @@ transactionsRouter.post('/:id/tags', async (req: AuthenticatedRequest, res) => {
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
   const { tagId, amount } = req.body
-  const tag = await db.transactionTag.create({
+  const tag = await db.tagObject.create({
     data: { transactionId: id, tagId, amount },
     include: { tag: true },
   })
@@ -368,7 +385,7 @@ transactionsRouter.delete('/:id/tags/:tagId', async (req: AuthenticatedRequest, 
     where: { id, budget: { plan: { ownerId: req.user!.sub } } },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  await db.transactionTag.deleteMany({
+  await db.tagObject.deleteMany({
     where: { transactionId: id, tagId },
   })
   res.status(204).end()

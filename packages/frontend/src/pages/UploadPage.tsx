@@ -2,18 +2,30 @@ import { useState } from 'react'
 import { Upload, Table, Button, Typography, App as AntApp, Space, Select } from 'antd'
 import { InboxOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
+import apiClient from '../api/apiClient'
 import { parseCSV } from '../features/csv/parseCSV'
 import { matchAll } from '../features/matching/matcher'
-import { fetchUserAccounts, fetchPaymentPartners } from '../api/accounts'
-import { fetchActivePlans } from '../api/plans'
-import { fetchBudgets } from '../api/budgets'
-import { fetchUnmatchedTransactions } from '../api/transactions'
-import { fetchTags } from '../api/tags'
+import { targetKey } from '../features/matching/rules'
+import type { Candidate, TagRef, Target } from '../features/matching/types'
+import { planLabel } from '../features/planLabel'
+import { apiError, resolveAll, type RawPlan, type Tx } from '../features/planTransactions'
 import type { CsvRow } from '../features/csv/types'
-import type { RwAccount } from '../types/resco'
 
 const { Dragger } = Upload
 const { Title, Text } = Typography
+
+type AccountItem = { id: string; name: string; type: string; isDefault?: boolean }
+
+type PlanItem = {
+  id: string
+  name: string | null
+  startDate: string | null
+  endDate: string | null
+  intervalType: string
+  templateIntervalType?: string | null
+  isTemplate: boolean
+  statusCode: number
+}
 
 const PREVIEW_COLUMNS = [
   { title: 'Date', dataIndex: 'executedon', key: 'executedon', width: 110 },
@@ -34,7 +46,7 @@ const PREVIEW_COLUMNS = [
 
 export default function UploadPage() {
   const [csvRows, setCsvRows] = useState<CsvRow[]>([])
-  const [userAccounts, setUserAccounts] = useState<RwAccount[]>([])
+  const [bankAccounts, setBankAccounts] = useState<AccountItem[]>([])
   const [selectedAccountId, setSelectedAccountId] = useState<string>()
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -45,11 +57,11 @@ export default function UploadPage() {
       const parsed = await parseCSV(file)
       setCsvRows(parsed)
       message.success(`Parsed ${parsed.length} rows`)
-      // Load bank accounts for the account selector
-      if (userAccounts.length === 0) {
-        const accounts = await fetchUserAccounts()
-        setUserAccounts(accounts)
-        const def = accounts.find((a) => a.rw_isdefault)
+      if (bankAccounts.length === 0) {
+        const res = await apiClient.get<AccountItem[]>('/api/accounts')
+        const banks = res.data.filter((a) => a.type === 'BANK')
+        setBankAccounts(banks)
+        const def = banks.find((a) => a.isDefault) ?? banks[0]
         if (def) setSelectedAccountId(def.id)
       }
     } catch {
@@ -60,29 +72,66 @@ export default function UploadPage() {
 
   async function handleAnalyze() {
     if (csvRows.length === 0) return
+    if (!selectedAccountId) {
+      message.warning('Select the bank account this CSV belongs to.')
+      return
+    }
     setLoading(true)
     try {
-      // 1. Fetch active plans and their budgets
-      const plans = await fetchActivePlans()
-      const planIds = plans.map((p) => p.id)
-      const budgets = await fetchBudgets(planIds)
-      const budgetIds = budgets.map((b) => b.id)
-
-      // 2. Fetch unmatched planned transactions + reference data
-      const [transactions, partners, tags] = await Promise.all([
-        fetchUnmatchedTransactions([...planIds, ...budgetIds]),
-        fetchPaymentPartners(),
-        fetchTags(),
+      // Completed plans are limited to the period covered by the CSV
+      const dates = csvRows.map((r) => r.executedon).filter(Boolean).sort()
+      const [active, completed, accountsRes, tagsRes, ticketsRes] = await Promise.all([
+        apiClient.get<PlanItem[]>('/api/plans', { params: { status: '1', isTemplate: 'false' } }),
+        apiClient.get<PlanItem[]>('/api/plans', { params: { status: '3', isTemplate: 'false', from: dates[0], to: dates[dates.length - 1] } }),
+        apiClient.get<AccountItem[]>('/api/accounts'),
+        apiClient.get<TagRef[]>('/api/tags'),
+        apiClient.get<{ ticketId: string | null }[]>('/api/bank-tickets', { params: { accountId: selectedAccountId } }),
       ])
 
-      // 3. Run matching engine
-      const results = matchAll(csvRows, transactions, budgets, plans, partners, tags)
+      // Newest plan first, which is the order the partner history is searched in
+      const planItems = [...active.data, ...completed.data].sort((a, b) => (b.startDate ?? '').localeCompare(a.startDate ?? ''))
+      const details = await Promise.all(planItems.map((p) => apiClient.get<RawPlan>(`/api/plans/${p.id}`)))
+      const accountMap = new Map(accountsRes.data.map((a) => [a.id, a]))
+
+      const candidates: Candidate[] = []
+      const targets: Target[] = []
+      const history: { tx: Tx; target: Target }[] = []
+      planItems.forEach((item, i) => {
+        const plan = details[i].data
+        const label = planLabel(item)
+        const completedPlan = item.statusCode === 3
+        const planTargets: Target[] = [
+          {
+            key: targetKey(plan.id, null), planId: plan.id, budgetId: null, budgetName: null,
+            label: `${label} › General`, completed: completedPlan, startDate: item.startDate, endDate: item.endDate,
+          },
+          ...plan.budgets.map((b) => {
+            const budgetName = b.name ?? b.template?.name ?? '(unnamed)'
+            return {
+              key: targetKey(plan.id, b.id), planId: plan.id, budgetId: b.id, budgetName,
+              label: `${label} › ${budgetName}`, completed: completedPlan, startDate: item.startDate, endDate: item.endDate,
+            }
+          }),
+        ]
+        targets.push(...planTargets)
+        const txs = resolveAll(plan, accountMap)
+        for (const tx of txs) {
+          const target = planTargets.find((t) => t.budgetId === tx.budgetId)
+          if (target) history.push({ tx, target })
+          if (item.statusCode === 1 && !tx.executedOn && !tx.budgetCompleted) candidates.push({ ...tx, planId: plan.id, planLabel: label })
+        }
+      })
+
+      const partners = accountsRes.data.filter((a) => a.type === 'PAYMENT_PARTNER')
+      const known = new Set(ticketsRes.data.map((t) => t.ticketId).filter(Boolean))
+      const results = matchAll(csvRows, candidates, partners, tagsRes.data, history, targets)
+        .map((r) => ({ ...r, isDuplicate: !!r.csvRow.ticketid && known.has(r.csvRow.ticketid) }))
 
       navigate('/review', {
-        state: { results, transactions, budgets, plans, partners, tags, accountId: selectedAccountId },
+        state: { results, candidates, targets, partners, accounts: accountsRes.data, tags: tagsRes.data, accountId: selectedAccountId },
       })
-    } catch {
-      message.error('Failed to load data from Resco Cloud. Check your .env.local credentials.')
+    } catch (err) {
+      message.error(apiError(err, 'Failed to load data'))
     } finally {
       setLoading(false)
     }
@@ -109,14 +158,14 @@ export default function UploadPage() {
         <>
           <Text type="secondary">{csvRows.length} rows parsed</Text>
 
-          {userAccounts.length > 0 && (
+          {bankAccounts.length > 0 && (
             <div>
               <Text strong style={{ marginRight: 8 }}>Bank account in this CSV:</Text>
               <Select
                 style={{ width: 280 }}
                 value={selectedAccountId}
                 onChange={setSelectedAccountId}
-                options={userAccounts.map((a) => ({ value: a.id, label: a.name }))}
+                options={bankAccounts.map((a) => ({ value: a.id, label: a.name }))}
               />
             </div>
           )}
@@ -137,4 +186,3 @@ export default function UploadPage() {
     </Space>
   )
 }
-

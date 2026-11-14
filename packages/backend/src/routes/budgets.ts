@@ -91,7 +91,7 @@ budgetsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
     if (plan?.isTemplate) await removeTemplateBudget(tx, existing)
     const own = { budgetId: id }
     if (await tx.transaction.count({ where: { ...own, executedOn: { not: null } } }) > 0) return false
-    await tx.transactionTag.deleteMany({ where: { transaction: own } })
+    await tx.tagObject.deleteMany({ where: { transaction: own } })
     await tx.transaction.deleteMany({ where: own })
     await tx.budget.delete({ where: { id } })
     return true

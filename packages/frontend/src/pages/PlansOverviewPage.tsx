@@ -33,6 +33,7 @@ import ActivatePlanModal from '../components/ActivatePlanModal'
 import RowActions, { type RowAction } from '../components/RowActions'
 import { usePlanTxActions, type TxActionContext } from '../features/usePlanTxActions'
 import LogTransactionModal from '../components/LogTransactionModal'
+import { TagsField, useTagSelection } from '../components/TagPicker'
 
 dayjs.extend(isoWeek)
 
@@ -846,6 +847,7 @@ export default function PlansOverviewPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createForm] = Form.useForm<{ name: string; intervalType: string }>()
+  const createTags = useTagSelection(createOpen)
   const [recurrencePlanId, setRecurrencePlanId] = useState<string | null>(null)
   const [activatePlan, setActivatePlan] = useState<PlanDetailed | null>(null)
   const [logTarget, setLogTarget] = useState<{ planId?: string; budgetId?: string | null } | null>(null)
@@ -880,6 +882,9 @@ export default function PlansOverviewPage() {
         isTemplate: true,
         statusCode: 0,
       })
+      if (createTags.tagIds.length > 0) {
+        await apiClient.put(`/api/tags/objects/plan/${res.data.id}`, { tagIds: createTags.tagIds })
+      }
       setCreateOpen(false)
       navigate(`/plans/${res.data.id}/edit`, {
         state: { returnState: { mode, offset, splitView, expandedTemplateIds } },
@@ -1102,6 +1107,9 @@ export default function PlansOverviewPage() {
               ]}
             />
           </Form.Item>
+          <Form.Item label="Tags" style={{ marginBottom: 0 }}>
+            <TagsField tags={createTags.allTags} value={createTags.tagIds} onChange={createTags.setTagIds} />
+          </Form.Item>
         </Form>
       </Modal>
       {/* Controls */}
@@ -1191,7 +1199,7 @@ export default function PlansOverviewPage() {
         </div>
       )}
 
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
 
       {!loading && !error && (
         <>

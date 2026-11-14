@@ -405,7 +405,7 @@ export default function AccountBalancePage() {
       </Row>
 
       {loading && <div style={{ textAlign: 'center', padding: 48 }}><Spin size="large" /></div>}
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
 
       {!loading && !error && accounts.length === 0 && (
         <Empty description="No CASH, BANK or INVESTMENT accounts found" />

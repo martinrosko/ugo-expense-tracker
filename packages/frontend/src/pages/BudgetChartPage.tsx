@@ -370,7 +370,7 @@ export default function BudgetChartPage() {
       </Row>
 
       {loading && <div style={{ textAlign: 'center', padding: 48 }}><Spin size="large" /></div>}
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
 
       {!loading && !error && selections.length === 0 && (
         <Empty description="Select plans or budgets to see cumulative income & expense over time" />

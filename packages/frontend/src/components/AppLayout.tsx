@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react'
 import { Layout, Menu, Typography } from 'antd'
-import { UploadOutlined, CheckSquareOutlined, ApiOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined, AreaChartOutlined } from '@ant-design/icons'
+import { UploadOutlined, CheckSquareOutlined, ApiOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined, AreaChartOutlined, SettingOutlined, TagsOutlined } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import apiClient from '../api/apiClient'
 
@@ -19,6 +19,12 @@ const NAV_ITEMS = [
   { key: '/upload', label: 'Upload CSV', icon: <UploadOutlined /> },
   { key: '/review', label: 'Review & Submit', icon: <CheckSquareOutlined /> },
   { key: '/resco-test', label: 'Resco Test', icon: <ApiOutlined /> },
+  {
+    key: '/settings',
+    label: 'Settings',
+    icon: <SettingOutlined />,
+    children: [{ key: '/settings/tags', label: 'Tags', icon: <TagsOutlined /> }],
+  },
 ]
 
 export default function AppLayout({ children }: AppLayoutProps) {
@@ -41,6 +47,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
           theme="dark"
           mode="inline"
           selectedKeys={[location.pathname]}
+          defaultOpenKeys={location.pathname.startsWith('/settings') ? ['/settings'] : []}
           items={NAV_ITEMS}
           onClick={({ key }) => navigate(key)}
         />

@@ -93,7 +93,7 @@ export default function ChangeRecurrenceModal({ planId, onClose, onChanged }: Pr
     >
       {contextHolder}
       {loading && <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>}
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
       {info && (
         <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           <Descriptions size="small" column={1} bordered>
