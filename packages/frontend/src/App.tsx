@@ -13,6 +13,7 @@ import PartnerBalancePage from './pages/PartnerBalancePage'
 import BudgetChartPage from './pages/BudgetChartPage'
 import AccountBalancePage from './pages/AccountBalancePage'
 import SettingsTagsPage from './pages/SettingsTagsPage'
+import SettingsPartnersPage from './pages/SettingsPartnersPage'
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ export default function App() {
                 <Route path="/resco-test" element={<RescoTestPage />} />
                 <Route path="/settings" element={<Navigate to="/settings/tags" replace />} />
                 <Route path="/settings/tags" element={<SettingsTagsPage />} />
+                <Route path="/settings/partners" element={<SettingsPartnersPage />} />
               </Routes>
             </AppLayout>
           </RequireAuth>

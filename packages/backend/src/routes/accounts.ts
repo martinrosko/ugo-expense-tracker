@@ -1,13 +1,17 @@
 import { Router } from 'express'
+import { AccountType } from '@prisma/client'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
 
 export const accountsRouter = Router()
 
-// GET /api/accounts
+// GET /api/accounts?type=PAYMENT_PARTNER&withTags=true
 accountsRouter.get('/', async (req: AuthenticatedRequest, res) => {
+  const { type, withTags } = req.query
+  const accountType = Object.values(AccountType).find((t) => t === type)
   const accounts = await db.account.findMany({
-    where: { ownerId: req.user!.sub },
+    where: { ownerId: req.user!.sub, ...(accountType ? { type: accountType } : {}) },
+    ...(withTags === 'true' ? { include: { tags: { include: { tag: true } } } } : {}),
     orderBy: { name: 'asc' },
   })
   res.json(accounts)

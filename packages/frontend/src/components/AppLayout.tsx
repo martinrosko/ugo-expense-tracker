@@ -23,7 +23,10 @@ const NAV_ITEMS = [
     key: '/settings',
     label: 'Settings',
     icon: <SettingOutlined />,
-    children: [{ key: '/settings/tags', label: 'Tags', icon: <TagsOutlined /> }],
+    children: [
+      { key: '/settings/tags', label: 'Tags', icon: <TagsOutlined /> },
+      { key: '/settings/partners', label: 'Partner accounts', icon: <TeamOutlined /> },
+    ],
   },
 ]
 

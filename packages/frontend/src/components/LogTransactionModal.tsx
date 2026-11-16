@@ -32,6 +32,7 @@ const changed = <T,>(next: T | null, current: T | null) => (next !== null && nex
 function modalTx(t: Tx, amount: number | null): TxModalTx {
   return {
     id: t.id,
+    templateId: t.templateId,
     name: t.raw.name ?? t.raw.template?.name ?? null,
     plannedAmount: amount !== null ? String(amount) : null,
     fromAccountId: t.from?.id ?? null,
@@ -199,6 +200,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
       mode="execute"
       open={open}
       editTags
+      tagDefaults={{ planId: plan?.id }}
       tx={selected ? modalTx(selected, selected.executedOn ? selected.amount : selected.plannedAmount) : null}
       accounts={accounts}
       planIntervalType={plan?.intervalType ?? 'ONE_TIME'}

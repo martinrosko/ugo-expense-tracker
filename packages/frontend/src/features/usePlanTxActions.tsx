@@ -21,6 +21,7 @@ type Target = { kind: 'execute' | 'edit' | 'editExecuted'; plan: RawPlan; tx: Tx
 function modalTx(t: Tx, amount: number | null): TxModalTx {
   return {
     id: t.id,
+    templateId: t.templateId,
     name: t.raw.name ?? t.raw.template?.name ?? null,
     plannedAmount: amount !== null ? String(amount) : null,
     fromAccountId: t.from?.id ?? null,

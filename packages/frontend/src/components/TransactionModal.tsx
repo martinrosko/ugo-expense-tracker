@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DatePicker, Divider, Form, Input, InputNumber, Modal, Radio, Select, Space, Tag, Typography } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import apiClient from '../api/apiClient'
@@ -16,6 +16,8 @@ type AccountRef = { id: string; name: string; type: string }
 export type TxModalTx = {
   /** Used to load the transaction's tags */
   id?: string | null
+  /** Execute mode: a planned transaction without own tags gets the tags of its template */
+  templateId?: string | null
   name: string | null
   plannedAmount: string | null
   fromAccountId: string | null
@@ -79,7 +81,7 @@ const MONTH_OPTIONS = [
  * Add/edit a planned transaction ('plan') or log it as executed ('execute').
  * Execute mode asks for the execution date instead of the due day; with tx = null it logs an unplanned transaction.
  */
-export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, editTags, initialTagIds, onOk, onCancel }: {
+export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, editTags, initialTagIds, tagDefaults, onOk, onCancel }: {
   open: boolean
   tx: TxModalTx | null
   accounts: AccountRef[]
@@ -101,6 +103,11 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   editTags?: boolean
   /** Preselected tags when the transaction has no id to load them from */
   initialTagIds?: string[]
+  /**
+   * New transactions (tx = null) start with the distinct union of the tags of the plan, the budget and the selected accounts,
+   * until the user edits the tags. budgetTagIds overrides the stored tags of an unsaved or edited budget.
+   */
+  tagDefaults?: { planId?: string | null; budgetId?: string | null; budgetTagIds?: string[] }
   onOk: (body: TxModalBody) => Promise<void>
   onCancel: () => void
 }) {
@@ -116,8 +123,14 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   const [allTags, setAllTags] = useState<{ id: string; name: string }[]>([])
   const [tagIds, setTagIds] = useState<string[]>([])
   const txId = tx?.id ?? null
+  const templateId = mode === 'execute' && !tx?.executedOn ? tx?.templateId ?? null : null
+  const tagsTouched = useRef(false)
+  const watchedBudgetId = Form.useWatch('budgetId', form) as string | null | undefined
+  const watchedFromId = Form.useWatch('fromAccountId', form) as string | undefined
+  const watchedToId = Form.useWatch('toAccountId', form) as string | undefined
 
   useEffect(() => {
+    tagsTouched.current = false
     setTags([])
     setTagIds(initialTagIds ?? [])
     if (!open) return
@@ -127,18 +140,43 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
         .then((res) => { if (!cancelled) setAllTags(res.data) })
         .catch(() => undefined)
     }
-    if (txId) {
-      apiClient.get<{ tags?: { tag: { id: string; name: string } }[] }>(`/api/transactions/${txId}`)
-        .then((res) => {
+    const fetchTags = (id: string) =>
+      apiClient.get<{ tags?: { tag: { id: string; name: string } }[] }>(`/api/transactions/${id}`)
+        .then((res) => (res.data.tags ?? []).map((t) => t.tag))
+    if (txId && !initialTagIds) {
+      fetchTags(txId)
+        .then((own) => (own.length === 0 && templateId ? fetchTags(templateId) : own))
+        .then((loaded) => {
           if (cancelled) return
-          const loaded = (res.data.tags ?? []).map((t) => t.tag)
           setTags(loaded)
           setTagIds(loaded.map((t) => t.id))
         })
         .catch(() => undefined) // unsaved transactions have no tags to load
     }
     return () => { cancelled = true }
-  }, [open, txId, editTags]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, txId, editTags, resetKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const defaultsPlanId = tagDefaults?.planId ?? null
+  const budgetTagIds = tagDefaults?.budgetTagIds
+  const defaultsBudgetId = budgets ? watchedBudgetId ?? null : tagDefaults?.budgetId ?? null
+  const defaultsKey = [defaultsPlanId, defaultsBudgetId, budgetTagIds?.join(','), watchedFromId, watchedToId].join('|')
+
+  useEffect(() => {
+    if (!open || !editTags || !tagDefaults || tx || tagsTouched.current) return
+    let cancelled = false
+    const apply = (ids: string[]) => { if (!cancelled && !tagsTouched.current) setTagIds([...new Set([...ids, ...(budgetTagIds ?? [])])]) }
+    const accountIds = [watchedFromId, watchedToId].filter(Boolean).join(',')
+    apiClient.get<{ id: string }[]>('/api/tags/union', {
+      params: {
+        planId: defaultsPlanId ?? undefined,
+        budgetId: budgetTagIds || !defaultsBudgetId ? undefined : defaultsBudgetId,
+        accountIds: accountIds || undefined,
+      },
+    })
+      .then((res) => apply(res.data.map((t) => t.id)))
+      .catch(() => apply([]))
+    return () => { cancelled = true }
+  }, [open, editTags, tx, resetKey, defaultsKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const execute = mode === 'execute'
   const assetAccounts = accounts.filter((a) => ASSET_TYPES.has(a.type))
@@ -376,7 +414,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
               <Text strong>Tags</Text>
               {editTags ? (
                 <div style={{ marginTop: 8 }}>
-                  <TagsField tags={allTags} value={tagIds} onChange={setTagIds} />
+                  <TagsField tags={allTags} value={tagIds} onChange={(ids) => { tagsTouched.current = true; setTagIds(ids) }} />
                 </div>
               ) : (
                 <div style={{ marginTop: 8 }}>

@@ -15,7 +15,9 @@
     "docker:up:dev": "docker compose up -d postgres keycloak",
     "docker:down": "docker compose down",
     "start:all": "npm run docker:up:dev && concurrently -k -n backend,frontend -c blue,green \"npm:backend:dev\" \"npm:dev\"",
-    "docker:build": "docker compose build"
+    "docker:build": "docker compose build",
+    "db:backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db-backup.ps1",
+    "db:restore": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db-restore.ps1"
   },
   "devDependencies": {
     "concurrently": "^10.0.7"

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
-import { isTagObjectType, listObjectTags, ownsObject, replaceObjectTags } from '../services/tagObjects.js'
+import { isTagObjectType, listObjectTags, listUnionTags, ownsObject, replaceObjectTags, type TagObjectType } from '../services/tagObjects.js'
 
 export const tagsRouter = Router()
 
@@ -50,6 +50,14 @@ tagsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
     data: { name: checked.name, color: req.body?.color },
   })
   res.json(tag)
+})
+
+// GET /api/tags/union?planId=&budgetId=&accountIds=a,b  — distinct union of the tags of the given objects
+tagsRouter.get('/union', async (req: AuthenticatedRequest, res) => {
+  const ids = (v: unknown) => (typeof v === 'string' ? v.split(',').filter(Boolean) : [])
+  const of = (type: TagObjectType, v: unknown) => ids(v).map((id) => ({ type, id }))
+  const objects = [...of('plan', req.query.planId), ...of('budget', req.query.budgetId), ...of('account', req.query.accountIds)]
+  res.json(await listUnionTags(db, objects, req.user!.sub))
 })
 
 // GET /api/tags/objects/:type/:id  (type = transaction | plan | budget | account)

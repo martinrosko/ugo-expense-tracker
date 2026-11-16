@@ -31,6 +31,28 @@ export function listObjectTags(client: Prisma.TransactionClient, type: TagObject
   return client.tag.findMany({ where: { objects: { some: targetOf(type, id) } }, orderBy: { name: 'asc' } })
 }
 
+/** Distinct tags of all given objects the owner owns, including those of the template a plan or budget is based on. */
+export async function listUnionTags(client: Prisma.TransactionClient, objects: { type: TagObjectType; id: string }[], ownerId: string) {
+  const checks = await Promise.all(objects.map((o) => ownsObject(client, o.type, o.id, ownerId)))
+  const owned = objects.filter((_, i) => checks[i])
+  const planIds = owned.filter((o) => o.type === 'plan').map((o) => o.id)
+  const budgetIds = owned.filter((o) => o.type === 'budget').map((o) => o.id)
+  const [plans, budgets] = await Promise.all([
+    client.plan.findMany({ where: { id: { in: planIds }, templateId: { not: null } }, select: { templateId: true } }),
+    client.budget.findMany({ where: { id: { in: budgetIds }, templateId: { not: null } }, select: { templateId: true } }),
+  ])
+  const targets = [
+    ...owned.map((o) => targetOf(o.type, o.id)),
+    ...plans.map((p) => targetOf('plan', p.templateId!)),
+    ...budgets.map((b) => targetOf('budget', b.templateId!)),
+  ]
+  if (targets.length === 0) return []
+  return client.tag.findMany({
+    where: { ownerId, objects: { some: { OR: targets } } },
+    orderBy: { name: 'asc' },
+  })
+}
+
 /** Makes the object's tags equal to tagIds (own tags only); a missing tagIds leaves them untouched. */
 export async function replaceObjectTags(client: Prisma.TransactionClient, type: TagObjectType, id: string, ownerId: string, tagIds: unknown) {
   if (!Array.isArray(tagIds)) return

@@ -29,6 +29,9 @@ packages/backend/node_modules/.prisma
 
 # Docker volumes
 postgres_data
+
+# Database backups (contain personal data)
+backups/
 .idea
 .DS_Store
 *.suo

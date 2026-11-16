@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Table, Button, Select, Tag, Typography, Space, App as AntApp, Tooltip, Badge } from 'antd'
 import { WarningOutlined, EditOutlined } from '@ant-design/icons'
@@ -26,6 +26,8 @@ interface EditableRow extends MatchResult {
   key: string
   selected: boolean
   details?: RowDetails
+  /** Once the user edited the tags they are no longer prefilled */
+  tagsTouched?: boolean
 }
 
 const fmtDate = (d: Date | null) => (d ? d.toLocaleDateString('sk-SK') : 'no date')
@@ -57,6 +59,48 @@ export default function ReviewPage() {
   const partners = state?.partners ?? []
   const allAccounts = state?.accounts ?? []
   const tags = state?.tags ?? []
+
+  const ruleTags = useRef(new Map((state?.results ?? []).map((r, i) => [String(i), r.tags])))
+  const appliedSignature = useRef(new Map<string, string>())
+
+  // Matched rows get the tags of the planned transaction (or its template); new ones those of plan, budget and accounts
+  useEffect(() => {
+    for (const row of rows) {
+      if (row.isDuplicate || row.tagsTouched) continue
+      const acc = rowAccounts(row)
+      const signature = [row.matched?.id, row.target?.planId, row.target?.budgetId, acc.from, acc.to].join('|')
+      if (appliedSignature.current.get(row.key) === signature) continue
+      appliedSignature.current.set(row.key, signature)
+      void defaultTagIds(row, acc).then((ids) => {
+        const wanted = new Set([...(ruleTags.current.get(row.key) ?? []).map((t) => t.id), ...ids])
+        setRows((prev) => prev.map((r) => (r.key === row.key && !r.tagsTouched ? { ...r, tags: tags.filter((t) => wanted.has(t.id)) } : r)))
+      })
+    }
+  }, [rows]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function defaultTagIds(row: EditableRow, acc: { from: string | null; to: string | null }): Promise<string[]> {
+    try {
+      if (row.matched) {
+        const own = await fetchTransactionTagIds(row.matched.id)
+        return own.length === 0 && row.matched.templateId ? await fetchTransactionTagIds(row.matched.templateId) : own
+      }
+      const res = await apiClient.get<{ id: string }[]>('/api/tags/union', {
+        params: {
+          planId: row.target?.planId,
+          budgetId: row.target?.budgetId ?? undefined,
+          accountIds: [acc.from, acc.to].filter(Boolean).join(',') || undefined,
+        },
+      })
+      return res.data.map((t) => t.id)
+    } catch {
+      return []
+    }
+  }
+
+  async function fetchTransactionTagIds(id: string): Promise<string[]> {
+    const res = await apiClient.get<{ tags?: { tag: { id: string } }[] }>(`/api/transactions/${id}`)
+    return (res.data.tags ?? []).map((t) => t.tag.id)
+  }
 
   function updateRow(key: string, patch: Partial<EditableRow>) {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)))
@@ -99,6 +143,7 @@ export default function ReviewPage() {
         executedOn: body.executedOn!,
       },
       tags: tags.filter((t) => ids.includes(t.id)),
+      tagsTouched: true,
     })
     setDetailsKey(null)
   }
@@ -316,7 +361,7 @@ export default function ReviewPage() {
         <TagsField
           tags={tags}
           value={row.tags.map((t) => t.id)}
-          onChange={(ids) => updateRow(row.key, { tags: tags.filter((t) => ids.includes(t.id)) })}
+          onChange={(ids) => updateRow(row.key, { tags: tags.filter((t) => ids.includes(t.id)), tagsTouched: true })}
         />
       ),
     },

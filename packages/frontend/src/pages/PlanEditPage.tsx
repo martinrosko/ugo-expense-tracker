@@ -44,6 +44,8 @@ type Transaction = {
   type: string
   templateId: string | null
   template: TxTemplate | null
+  /** Set once the user edited the transaction's tags; saved with the other changes */
+  tagIds?: string[]
 }
 
 type BudgetTemplate = { name: string | null; amount: string | null }
@@ -120,6 +122,7 @@ type TxSaveBody = {
   fromAccountId: string | null
   toAccountId: string | null
   dueDateConfig: string | null
+  tagIds?: string[]
 }
 
 // ─── Budget modal ─────────────────────────────────────────────────────────────
@@ -570,6 +573,7 @@ export default function PlanEditPage() {
       fromAccountId: tx.fromAccountId,
       toAccountId: tx.toAccountId,
       dueDateConfig: tx.dueDateConfig,
+      tagIds: tx.tagIds,
     }
   }
 
@@ -875,6 +879,13 @@ export default function PlanEditPage() {
         tx={txModal.tx}
         accounts={accounts}
         planIntervalType={plan.intervalType}
+        editTags
+        initialTagIds={txModal.tx?.tagIds}
+        tagDefaults={{
+          planId: plan.id,
+          budgetId: txModal.budgetId,
+          budgetTagIds: plan.budgets.find((budget) => budget.id === txModal.budgetId)?.tagIds,
+        }}
         onOk={saveTx}
         onCancel={() => setTxModal({ open: false, tx: null, planId: null, budgetId: null })}
       />
