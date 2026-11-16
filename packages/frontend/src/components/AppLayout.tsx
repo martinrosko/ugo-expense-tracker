@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react'
 import { Layout, Menu, Typography } from 'antd'
-import { UploadOutlined, CheckSquareOutlined, ApiOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined, AreaChartOutlined, SettingOutlined, TagsOutlined } from '@ant-design/icons'
+import { CheckSquareOutlined, ApiOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined, AreaChartOutlined, SettingOutlined, TagsOutlined } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import apiClient from '../api/apiClient'
 
@@ -16,8 +16,7 @@ const NAV_ITEMS = [
   { key: '/partners', label: 'Partner Balance', icon: <TeamOutlined /> },
   { key: '/budget-chart', label: 'Budget Chart', icon: <FundOutlined /> },
   { key: '/account-balance', label: 'Account Balance', icon: <AreaChartOutlined /> },
-  { key: '/upload', label: 'Upload CSV', icon: <UploadOutlined /> },
-  { key: '/review', label: 'Review & Submit', icon: <CheckSquareOutlined /> },
+  { key: '/review', label: 'Upload & Review', icon: <CheckSquareOutlined /> },
   { key: '/resco-test', label: 'Resco Test', icon: <ApiOutlined /> },
   {
     key: '/settings',

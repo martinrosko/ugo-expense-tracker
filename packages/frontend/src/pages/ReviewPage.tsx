@@ -1,17 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
-import { Table, Button, Select, Tag, Typography, Space, App as AntApp, Tooltip, Badge } from 'antd'
-import { WarningOutlined, EditOutlined } from '@ant-design/icons'
+import { Table, Button, Select, Tag, Typography, Space, App as AntApp, Tooltip, Badge, Checkbox, Spin, Upload } from 'antd'
+import { WarningOutlined, EditOutlined, InboxOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import type { SelectProps } from 'antd'
 import axios from 'axios'
 import apiClient from '../api/apiClient'
 import TransactionModal, { type TxModalBody, type TxModalTx } from '../components/TransactionModal'
 import { TagsField } from '../components/TagPicker'
-import type { Candidate, MatchResult, TagRef, Target } from '../features/matching/types'
+import { parseCSV } from '../features/csv/parseCSV'
+import type { CsvRow } from '../features/csv/types'
+import { analyzeCsv, type Analysis } from '../features/matching/analyze'
+import type { Candidate, MatchResult } from '../features/matching/types'
 import { rankTargets, targetKey } from '../features/matching/rules'
-import { apiError, type AccountRef } from '../features/planTransactions'
+import { apiError } from '../features/planTransactions'
 
 const { Title, Text } = Typography
+const { Dragger } = Upload
+
+type BankAccount = { id: string; name: string; type: string; isDefault?: boolean }
 
 /** Values the user filled in through the details dialog; they win over the CSV and the matched transaction. */
 type RowDetails = {
@@ -33,34 +39,22 @@ interface EditableRow extends MatchResult {
 const fmtDate = (d: Date | null) => (d ? d.toLocaleDateString('sk-SK') : 'no date')
 const fmtAmount = (v: number | null) => (v === null ? '' : ` · ${v.toFixed(2)} €`)
 
-export default function ReviewPage() {
-  const location = useLocation()
-  const navigate = useNavigate()
+function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: () => void; onDiscard: () => void }) {
   const { message } = AntApp.useApp()
 
-  const state = location.state as {
-    results: MatchResult[]
-    candidates: Candidate[]
-    targets: Target[]
-    partners: AccountRef[]
-    accounts: AccountRef[]
-    tags: TagRef[]
-    accountId?: string
-  } | null
-
   const [rows, setRows] = useState<EditableRow[]>(
-    (state?.results ?? []).map((r, i) => ({ ...r, key: String(i), selected: !r.isDuplicate })),
+    state.results.map((r, i) => ({ ...r, key: String(i), selected: !r.isDuplicate })),
   )
   const [submitting, setSubmitting] = useState(false)
   const [detailsKey, setDetailsKey] = useState<string | null>(null)
+  const [hideDuplicates, setHideDuplicates] = useState(false)
 
-  const candidates = state?.candidates ?? []
-  const targets = state?.targets ?? []
-  const partners = state?.partners ?? []
-  const allAccounts = state?.accounts ?? []
-  const tags = state?.tags ?? []
+  const { candidates, targets, tags } = state
+  const [createdPartners, setCreatedPartners] = useState<{ id: string; name: string; type: string }[]>([])
+  const partners = [...state.partners, ...createdPartners]
+  const allAccounts = [...state.accounts, ...createdPartners]
 
-  const ruleTags = useRef(new Map((state?.results ?? []).map((r, i) => [String(i), r.tags])))
+  const ruleTags = useRef(new Map(state.results.map((r, i) => [String(i), r.tags])))
   const appliedSignature = useRef(new Map<string, string>())
 
   // Matched rows get the tags of the planned transaction (or its template); new ones those of plan, budget and accounts
@@ -82,7 +76,7 @@ export default function ReviewPage() {
     try {
       if (row.matched) {
         const own = await fetchTransactionTagIds(row.matched.id)
-        return own.length === 0 && row.matched.templateId ? await fetchTransactionTagIds(row.matched.templateId) : own
+        return own.length === 0 && !row.matched.executedOn && row.matched.templateId ? await fetchTransactionTagIds(row.matched.templateId) : own
       }
       const res = await apiClient.get<{ id: string }[]>('/api/tags/union', {
         params: {
@@ -112,7 +106,7 @@ export default function ReviewPage() {
   function rowAccounts(row: EditableRow): { from: string | null; to: string | null } {
     if (row.details) return { from: row.details.fromAccountId, to: row.details.toAccountId }
     if (row.matched) return { from: row.matched.from?.id ?? null, to: row.matched.to?.id ?? null }
-    const bank = state?.accountId ?? null
+    const bank = state.accountId
     const partner = row.partner?.id ?? null
     return row.csvRow.amount < 0 ? { from: bank, to: partner } : { from: partner, to: bank }
   }
@@ -154,8 +148,8 @@ export default function ReviewPage() {
       message.warning('No rows selected (or all are duplicates).')
       return
     }
-    if (!state?.accountId) {
-      message.error('No bank account selected. Go back and choose one.')
+    if (!state.accountId) {
+      message.error('No bank account selected.')
       return
     }
     setSubmitting(true)
@@ -190,15 +184,23 @@ export default function ReviewPage() {
         if (row.matched) {
           const m = row.matched
           const id = m.id
-          // Only values that differ from the planned transaction become overrides
-          await apiClient.post(`/api/transactions/${id}/execute`, {
-            executedOn,
-            amount,
-            name: row.details?.name && row.details.name !== m.name ? row.details.name : undefined,
-            fromAccountId: acc.from && acc.from !== m.from?.id ? acc.from : undefined,
-            toAccountId: acc.to && acc.to !== m.to?.id ? acc.to : undefined,
-          })
-          await apiClient.patch(`/api/transactions/${id}`, { bankTicketId })
+          if (m.executedOn) {
+            // Already logged by hand: only link the bank ticket, keeping its date and amount unless edited in the dialog
+            await apiClient.patch(`/api/transactions/${id}`, {
+              bankTicketId,
+              ...(row.details ? { executedOn, amount, name: row.details.name ?? undefined, fromAccountId: acc.from, toAccountId: acc.to } : {}),
+            })
+          } else {
+            // Only values that differ from the planned transaction become overrides
+            await apiClient.post(`/api/transactions/${id}/execute`, {
+              executedOn,
+              amount,
+              name: row.details?.name && row.details.name !== m.name ? row.details.name : undefined,
+              fromAccountId: acc.from && acc.from !== m.from?.id ? acc.from : undefined,
+              toAccountId: acc.to && acc.to !== m.to?.id ? acc.to : undefined,
+            })
+            await apiClient.patch(`/api/transactions/${id}`, { bankTicketId })
+          }
           // Added one by one so the tags the planned transaction already has are kept
           for (const tagId of tagIds) {
             await apiClient.post(`/api/transactions/${id}/tags`, { tagId }).catch((err) => {
@@ -230,7 +232,7 @@ export default function ReviewPage() {
 
     if (successCount > 0) {
       message.success(`${successCount} transaction(s) submitted successfully.`)
-      navigate('/upload')
+      onDone()
     }
     setSubmitting(false)
   }
@@ -289,6 +291,7 @@ export default function ReviewPage() {
         <Select
           value={row.target?.key}
           placeholder="— select plan / budget —"
+          allowClear
           showSearch
           optionFilterProp="label"
           style={{ width: '100%' }}
@@ -296,9 +299,9 @@ export default function ReviewPage() {
             value: t.key,
             label: t.completed ? `${t.label} (completed)` : t.label,
           }))}
-          onChange={(val: string) => {
+          onChange={(val?: string) => {
             // A planned transaction from another plan/budget no longer applies
-            const keep = row.matched && targetKey(row.matched.planId, row.matched.budgetId) === val
+            const keep = val !== undefined && row.matched && targetKey(row.matched.planId, row.matched.budgetId) === val
             updateRow(row.key, { target: targets.find((t) => t.key === val), matched: keep ? row.matched : undefined })
           }}
         />
@@ -309,21 +312,28 @@ export default function ReviewPage() {
       width: 280,
       render: (_, row) => {
         const rowTime = new Date(row.csvRow.executedon).getTime()
-        const options = candidates
-          .filter((c) => !row.target || targetKey(c.planId, c.budgetId) === row.target.key)
-          .sort((a, b) => Math.abs((a.plannedDate?.getTime() ?? Infinity) - rowTime) - Math.abs((b.plannedDate?.getTime() ?? Infinity) - rowTime))
+        const dateOf = (c: Candidate) => (c.executedOn ?? c.plannedDate)?.getTime() ?? Infinity
+        const byDistance = (a: Candidate, b: Candidate) => Math.abs(dateOf(a) - rowTime) - Math.abs(dateOf(b) - rowTime)
+        const inTarget = (c: Candidate) => !row.target || targetKey(c.planId, c.budgetId) === row.target.key
+        const option = (c: Candidate, withPlan: boolean) => ({
+          value: c.id,
+          label: `${c.executedOn ? `${fmtDate(c.executedOn)} · executed · ${c.name}${fmtAmount(c.amount)}` : `${fmtDate(c.plannedDate)} · ${c.name}${fmtAmount(c.plannedAmount)}`}${withPlan ? ` · ${c.planLabel} › ${c.budgetName}` : ''}`,
+        })
+        // Planned transactions of other plans/budgets stay selectable; picking one switches the row's target
+        const own = candidates.filter(inTarget).sort(byDistance).map((c) => option(c, !row.target))
+        const others = row.target ? candidates.filter((c) => !inTarget(c)).sort(byDistance).map((c) => option(c, true)) : []
+        const options: SelectProps['options'] = row.target
+          ? [{ label: 'Selected plan / budget', options: own }, { label: 'Other plans / budgets', options: others }].filter((g) => g.options.length > 0)
+          : own
         return (
           <Select
             value={row.matched?.id}
-            placeholder={options.length === 0 ? 'No planned transactions' : '— create new —'}
+            placeholder={candidates.length === 0 ? 'No planned transactions' : own.length === 0 ? 'None in selected plan / budget' : '— create new —'}
             allowClear
             showSearch
             optionFilterProp="label"
             style={{ width: '100%' }}
-            options={options.map((c) => ({
-              value: c.id,
-              label: `${fmtDate(c.plannedDate)} · ${c.name}${fmtAmount(c.plannedAmount)}${row.target ? '' : ` · ${c.planLabel}`}`,
-            }))}
+            options={options}
             onChange={(val?: string) => {
               const matched = candidates.find((c) => c.id === val)
               const target = matched ? targets.find((t) => t.key === targetKey(matched.planId, matched.budgetId)) : row.target
@@ -409,11 +419,13 @@ export default function ReviewPage() {
 
   return (
     <Space orientation="vertical" size="large" style={{ width: '100%' }}>
-      <Title level={3}>Review Matches</Title>
       {duplicateCount > 0 && (
-        <Text type="warning">
-          <WarningOutlined /> {duplicateCount} row(s) were already imported and are excluded.
-        </Text>
+        <Space size="middle">
+          <Text type="warning">
+            <WarningOutlined /> {duplicateCount} row(s) were already imported and are excluded.
+          </Text>
+          <Checkbox checked={hideDuplicates} onChange={(e) => setHideDuplicates(e.target.checked)}>Hide duplicates</Checkbox>
+        </Space>
       )}
       {newCount > 0 && (
         <Text type="secondary">
@@ -421,7 +433,7 @@ export default function ReviewPage() {
         </Text>
       )}
       <Table
-        dataSource={rows}
+        dataSource={hideDuplicates ? rows.filter((r) => !r.isDuplicate) : rows}
         columns={columns}
         rowKey="key"
         size="small"
@@ -431,7 +443,7 @@ export default function ReviewPage() {
         onRow={(r) => ({ style: !r.matched && !r.isDuplicate ? { background: '#fffbe6' } : undefined })}
       />
       <Space>
-        <Button onClick={() => navigate('/upload')}>Back</Button>
+        <Button onClick={onDiscard}>Discard</Button>
         <Button type="primary" onClick={handleSubmit} loading={submitting} disabled={selectedCount === 0}>
           Submit {selectedCount > 0 ? `(${selectedCount})` : ''} selected
         </Button>
@@ -449,7 +461,95 @@ export default function ReviewPage() {
         okText="Apply"
         onOk={applyDetails}
         onCancel={() => setDetailsKey(null)}
+        onPartnerCreated={(a) => setCreatedPartners((prev) => [...prev, a])}
       />
+    </Space>
+  )
+}
+
+/** Uploads a bank CSV and goes straight to matching it against the plans. */
+export default function ReviewPage() {
+  const { message } = AntApp.useApp()
+  const [csvRows, setCsvRows] = useState<CsvRow[]>([])
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
+  const [accountId, setAccountId] = useState<string>()
+  const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  const [loading, setLoading] = useState(false)
+  // Remounts the review table whenever a new analysis is made
+  const [analysisId, setAnalysisId] = useState(0)
+
+  async function handleFile(file: File) {
+    try {
+      const parsed = await parseCSV(file)
+      let selected = accountId
+      if (bankAccounts.length === 0) {
+        const res = await apiClient.get<BankAccount[]>('/api/accounts')
+        const banks = res.data.filter((a) => a.type === 'BANK')
+        setBankAccounts(banks)
+        selected = (banks.find((a) => a.isDefault) ?? banks[0])?.id
+        setAccountId(selected)
+      }
+      if (!selected) {
+        message.warning('No bank account found. Create one first.')
+        return false
+      }
+      setAnalysis(null)
+      setCsvRows(parsed)
+    } catch {
+      message.error('Failed to parse CSV. Check the file format.')
+    }
+    return false
+  }
+
+  useEffect(() => {
+    if (csvRows.length === 0 || !accountId) return
+    let cancelled = false
+    setLoading(true)
+    analyzeCsv(csvRows, accountId)
+      .then((result) => {
+        if (cancelled) return
+        setAnalysis(result)
+        setAnalysisId((n) => n + 1)
+      })
+      .catch((err) => { if (!cancelled) message.error(apiError(err, 'Failed to load data')) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [csvRows, accountId, message])
+
+  function reset() {
+    setCsvRows([])
+    setAnalysis(null)
+  }
+
+  return (
+    <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+      <Title level={3}>Upload &amp; Review</Title>
+
+      <Dragger accept=".csv" beforeUpload={handleFile} showUploadList={false} style={{ padding: '24px' }}>
+        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+        <p className="ant-upload-text">Click or drag a bank CSV file here</p>
+        <p className="ant-upload-hint">Supports your bank's standard CSV export format.</p>
+      </Dragger>
+
+      {csvRows.length > 0 && (
+        <Space size="middle" wrap>
+          <Text type="secondary">{csvRows.length} rows parsed</Text>
+          {bankAccounts.length > 0 && (
+            <span>
+              <Text strong style={{ marginRight: 8 }}>Bank account in this CSV:</Text>
+              <Select
+                style={{ width: 280 }}
+                value={accountId}
+                onChange={setAccountId}
+                options={bankAccounts.map((a) => ({ value: a.id, label: a.name }))}
+              />
+            </span>
+          )}
+        </Space>
+      )}
+
+      {loading && <Spin />}
+      {analysis && !loading && <ReviewTable key={analysisId} state={analysis} onDone={reset} onDiscard={reset} />}
     </Space>
   )
 }

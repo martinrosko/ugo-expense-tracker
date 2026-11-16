@@ -1,9 +1,11 @@
 import type { CsvRow } from '../csv/types'
 import { direction, type AccountRef, type Tx } from '../planTransactions'
 import type { Candidate, MatchResult, TagRef, Target } from './types'
-import { findPartner, findTagsForRow, stringSimilarity, suggestTarget, targetKey } from './rules'
+import { findPartner, findTagsForRow, stringSimilarity, suggestTarget, targetDistance, targetKey } from './rules'
 
 const MATCH_THRESHOLD = 0.4
+// A bank row can only belong to a plan whose period it falls into, give or take a few days
+const PLAN_TOLERANCE_DAYS = 10
 
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 
@@ -16,7 +18,7 @@ function scoreTxVsRow(row: CsvRow, tx: Tx): number | null {
   let score = 0
 
   // Amount match — weight 0.5
-  const txAmount = tx.plannedAmount ?? 0
+  const txAmount = (tx.executedOn ? tx.amount : tx.plannedAmount) ?? tx.plannedAmount ?? 0
   if (txAmount !== 0 && row.amount !== 0) {
     const ratio = Math.abs(Math.abs(row.amount) - Math.abs(txAmount)) / Math.abs(txAmount)
     if (ratio < 0.01) score += 0.5
@@ -25,8 +27,9 @@ function scoreTxVsRow(row: CsvRow, tx: Tx): number | null {
   }
 
   // Date proximity — weight 0.3
-  if (tx.plannedDate && row.executedon) {
-    const daysDiff = Math.abs(tx.plannedDate.getTime() - new Date(row.executedon).getTime()) / 86_400_000
+  const txDate = tx.executedOn ?? tx.plannedDate
+  if (txDate && row.executedon) {
+    const daysDiff = Math.abs(txDate.getTime() - new Date(row.executedon).getTime()) / 86_400_000
     if (daysDiff <= 1) score += 0.3
     else if (daysDiff <= 5) score += 0.2
     else if (daysDiff <= 10) score += 0.1
@@ -52,8 +55,12 @@ export function matchAll(
   targets: Target[],
 ): MatchResult[] {
   // Best pairs first, so every planned transaction is matched to at most one row
+  const targetByKey = new Map(targets.map((t) => [t.key, t]))
   const pairs = csvRows.flatMap((row, rowIndex) =>
     candidates.flatMap((tx) => {
+      const target = targetByKey.get(targetKey(tx.planId, tx.budgetId))
+      const distance = target ? targetDistance(target, row.executedon) : 0
+      if (Number.isFinite(distance) && distance > PLAN_TOLERANCE_DAYS) return []
       const score = scoreTxVsRow(row, tx)
       return score === null ? [] : [{ rowIndex, tx, score }]
     }),
@@ -82,7 +89,7 @@ export function matchAll(
       partner,
       tags: findTagsForRow(row, tags),
       confidence: match?.score ?? topScore.get(rowIndex) ?? 0,
-      isDuplicate: false, // set by UploadPage
+      isDuplicate: false, // set by analyzeCsv
     }
   })
 }

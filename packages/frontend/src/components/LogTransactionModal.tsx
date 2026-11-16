@@ -106,7 +106,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
   )
   const active = plan?.statusCode === 1
   const completed = plan?.statusCode === 3
-  const planned = useMemo(() => (active ? txs.filter((t) => !t.executedOn && !t.budgetCompleted).sort(byPlannedDate) : []), [txs, active])
+  const planned = useMemo(() => (active || completed ? txs.filter((t) => !t.executedOn).sort(byPlannedDate) : []), [txs, active, completed])
   const executed = useMemo(() => txs.filter((t) => t.executedOn).sort(byExecutedNewestFirst), [txs])
   const selected = txKey === NEW ? null : txs.find((t) => t.id === txKey) ?? null
   const executing = selected !== null && !selected.executedOn
@@ -214,6 +214,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
       okDisabled={!plan || loadingPlan}
       onOk={submit}
       onCancel={onClose}
+      onPartnerCreated={(a) => setAccounts((prev) => [...prev, a])}
     />
   )
 }

@@ -78,7 +78,7 @@ const DAY_MS = 86_400_000
 const dayOf = (s: string) => Date.parse(s.slice(0, 10))
 
 /** Days between the date and the plan's period; 0 when inside, Infinity when the plan has no dates. */
-function targetDistance(t: Target, date: string): number {
+export function targetDistance(t: Target, date: string): number {
   if (!t.startDate || !t.endDate) return Infinity
   const d = dayOf(date)
   const start = dayOf(t.startDate)

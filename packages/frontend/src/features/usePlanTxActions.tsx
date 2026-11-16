@@ -36,6 +36,10 @@ function modalTx(t: Tx, amount: number | null): TxModalTx {
 // Only changed fields become overrides; untouched ones keep inheriting from the template
 const changed = <T,>(next: T | null, current: T | null) => (next !== null && next !== current ? next : undefined)
 
+/** What clicking a transaction row does: edit an executed transaction, or execute a pending one (change its planned values when it can't be executed). */
+export const rowClickAction = (actions: RowAction[], executed: boolean) =>
+  executed ? actions.find((a) => a.key === 'editExecuted') : actions.find((a) => a.key === 'execute') ?? actions.find((a) => a.key === 'edit')
+
 /**
  * Row actions for planned and executed transactions: execute, change planned values, edit an executed
  * transaction, discard an execution, delete. `modals` must be rendered once by the caller.
@@ -89,11 +93,11 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
       onClick: () => perform(() => apiClient.delete(`/api/transactions/${ctx.id}`), 'Transaction deleted'),
     }
     return [
-      ...(!ctx.executed && active && !ctx.budgetCompleted
-        ? [
-          { key: 'execute', label: 'Execute', icon: <CheckOutlined />, disabled: busy, onClick: () => open('execute', ctx) },
-          { key: 'edit', label: 'Change planned values', icon: <EditOutlined />, disabled: busy, onClick: () => open('edit', ctx) },
-        ]
+      ...(!ctx.executed && (active || completed)
+        ? [{ key: 'execute', label: 'Execute', icon: <CheckOutlined />, disabled: busy, onClick: () => open('execute', ctx) }]
+        : []),
+      ...(!ctx.executed && (active || completed)
+        ? [{ key: 'edit', label: 'Change planned values', icon: <EditOutlined />, disabled: busy, onClick: () => open('edit', ctx) }]
         : []),
       ...(ctx.executed && (active || completed)
         ? [{ key: 'editExecuted', label: 'Edit executed transaction', icon: <EditOutlined />, disabled: busy, onClick: () => open('editExecuted', ctx) }]
@@ -158,6 +162,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
   }
 
   const close = () => setTarget(null)
+  const addPartner = (a: Account) => setTarget((t) => (t ? { ...t, accounts: [...t.accounts, a] } : t))
   const forKind = (kind: Target['kind']) => (target?.kind === kind ? target : null)
   const executeTarget = forKind('execute')
   const editTarget = forKind('edit')
@@ -169,18 +174,19 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
         mode="execute" open={executeTarget !== null} editTags
         tx={executeTarget ? modalTx(executeTarget.tx, executeTarget.tx.plannedAmount) : null}
         accounts={executeTarget?.accounts ?? []} planIntervalType={executeTarget?.plan.intervalType ?? 'ONE_TIME'}
-        onOk={submitExecute} onCancel={close}
+        onOk={submitExecute} onCancel={close} onPartnerCreated={addPartner}
       />
       <TransactionModal
         open={editTarget !== null} editTags tx={editTarget ? modalTx(editTarget.tx, editTarget.tx.plannedAmount) : null}
         accounts={editTarget?.accounts ?? []} planIntervalType={editTarget?.plan.intervalType ?? 'ONE_TIME'}
-        onOk={submitEdit} onCancel={close}
+        onOk={submitEdit} onCancel={close} onPartnerCreated={addPartner}
       />
       <TransactionModal
         mode="execute" open={executedTarget !== null} editTags
         tx={executedTarget ? modalTx(executedTarget.tx, executedTarget.tx.amount) : null}
         accounts={executedTarget?.accounts ?? []} planIntervalType={executedTarget?.plan.intervalType ?? 'ONE_TIME'}
-        title="Edit Executed Transaction" okText="Save" onOk={submitEditExecuted} onCancel={close}
+        title="Edit Executed Transaction" okText="Save" onOk={submitEditExecuted} onCancel={close} onPartnerCreated={addPartner}
+        bankTicketControls onBankTicketUnlinked={() => void onChanged()}
       />
     </>
   )

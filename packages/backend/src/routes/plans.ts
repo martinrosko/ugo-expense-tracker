@@ -44,7 +44,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
             template: { select: { name: true, amount: true } },
             transactions: {
               select: {
-                id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true, templateId: true,
+                id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true, templateId: true, bankTicketId: true,
                 fromAccount: { select: { type: true } },
                 toAccount: { select: { type: true } },
                 template: { select: { name: true, plannedAmount: true, dueDateConfig: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
@@ -55,7 +55,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
         transactions: {
           where: { budgetId: null },
           select: {
-            id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true, templateId: true,
+            id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, type: true, templateId: true, bankTicketId: true,
             fromAccount: { select: { type: true } },
             toAccount: { select: { type: true } },
             template: { select: { name: true, plannedAmount: true, dueDateConfig: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } },
@@ -121,7 +121,7 @@ plansRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const txSelect = {
     id: true, name: true, amount: true, plannedAmount: true, plannedOn: true, executedOn: true, fromAccountId: true, toAccountId: true,
-    planId: true, budgetId: true, type: true, stateCode: true, statusCode: true, templateId: true,
+    planId: true, budgetId: true, type: true, stateCode: true, statusCode: true, templateId: true, bankTicketId: true,
     dueDateConfig: true,
     template: { select: { name: true, plannedAmount: true, plannedOn: true, fromAccountId: true, toAccountId: true, dueDateConfig: true } },
     fromAccount: { select: { id: true, name: true, type: true } },

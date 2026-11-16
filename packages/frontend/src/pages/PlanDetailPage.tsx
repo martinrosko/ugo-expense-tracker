@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Alert, Button, Space, Spin, Table, Tag, Tooltip, Typography } from 'antd'
-import { ArrowLeftOutlined, EditOutlined, ExclamationCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, EditOutlined, ExclamationCircleOutlined, LinkOutlined, PlusOutlined } from '@ant-design/icons'
 import apiClient from '../api/apiClient'
 import LogTransactionModal from '../components/LogTransactionModal'
 import RowActions from '../components/RowActions'
-import { usePlanTxActions, type TxActionContext } from '../features/usePlanTxActions'
+import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
 import {
   apiError, byExecutedNewestFirst, byPlannedDate, direction, isOverdue, num, resolveAll,
   type Account, type RawPlan, type Tx,
@@ -116,6 +116,7 @@ export default function PlanDetailPage() {
         {overdue && <Tooltip title="Overdue"><ExclamationCircleOutlined /></Tooltip>}
         <span>{t.name}</span>
         {t.templateId && <Tag style={{ fontSize: 11 }}>template</Tag>}
+        {t.raw.bankTicketId && <Tooltip title="Linked to a bank ticket"><LinkOutlined style={{ color: '#1677ff' }} /></Tooltip>}
       </Space>
     )
   }
@@ -152,6 +153,9 @@ export default function PlanDetailPage() {
           size="small" rowKey="key" pagination={false} dataSource={budgetRows}
           locale={{ emptyText: 'No budgets' }}
           expandable={{ defaultExpandAllRows: true, indentSize: 20 }}
+          onRow={(row) => (isTxRow(row)
+            ? { onClick: () => void rowClickAction(actionsFor(txContext(row.tx)), false)?.onClick(), style: { cursor: 'pointer' } }
+            : {})}
           columns={[
             {
               title: 'Name', key: 'name',
@@ -188,7 +192,7 @@ export default function PlanDetailPage() {
         <Table<Tx>
           size="small" rowKey="id" pagination={{ pageSize: 20, hideOnSinglePage: true }} dataSource={executed}
           locale={{ emptyText: 'No executed transactions' }}
-          onRow={(t) => ({ onClick: () => void actionsFor(txContext(t)).find((a) => a.key === 'editExecuted')?.onClick(), style: { cursor: 'pointer' } })}
+          onRow={(t) => ({ onClick: () => void rowClickAction(actionsFor(txContext(t)), true)?.onClick(), style: { cursor: 'pointer' } })}
           columns={[
             { title: 'Executed', key: 'date', width: 110, render: (_: unknown, t) => fmtDate(t.executedOn) },
             { title: 'Name', key: 'name', render: (_: unknown, t) => nameCell(t) },

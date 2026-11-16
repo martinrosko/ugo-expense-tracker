@@ -12,6 +12,7 @@ import {
 import apiClient from '../api/apiClient'
 import TransactionModal from '../components/TransactionModal'
 import { TagsField, useTagSelection } from '../components/TagPicker'
+import { usePlanTxActions } from '../features/usePlanTxActions'
 
 const { Title, Text } = Typography
 
@@ -481,6 +482,22 @@ export default function PlanEditPage() {
 
   useEffect(() => { load() }, [load])
 
+  const { actionsFor: txActionsFor, modals: txActionModals } = usePlanTxActions(load)
+
+  // Executed transactions are edited through their own dialog, which saves immediately
+  function editTx(tx: Transaction) {
+    if (!tx.executedOn) {
+      setTxModal({ open: true, tx, planId: tx.planId, budgetId: tx.budgetId })
+      return
+    }
+    if (plan && originalPlan && JSON.stringify(plan) !== JSON.stringify(originalPlan)) {
+      messageApi.warning('Save or discard your changes before editing an executed transaction')
+      return
+    }
+    const ctx = { id: tx.id, planId: id!, planStatus: plan!.statusCode, budgetCompleted: false, templateId: tx.templateId, executed: true }
+    void txActionsFor(ctx).find((a) => a.key === 'editExecuted')?.onClick()
+  }
+
   // ── Transaction CRUD ──────────────────────────────────────────────────────────
 
   async function saveTx(body: TxSaveBody) {
@@ -777,7 +794,7 @@ export default function PlanEditPage() {
                       transactions={plan.transactions}
                       accounts={accounts}
                       isLocked={isLocked}
-                      onEdit={(tx) => setTxModal({ open: true, tx, planId: tx.planId, budgetId: tx.budgetId })}
+                      onEdit={editTx}
                       onDelete={deleteTx}
                     />
                   ) : (
@@ -849,7 +866,7 @@ export default function PlanEditPage() {
                           transactions={budget.transactions}
                           accounts={accounts}
                           isLocked={isLocked}
-                          onEdit={(tx) => setTxModal({ open: true, tx, planId: tx.planId, budgetId: tx.budgetId })}
+                          onEdit={editTx}
                           onDelete={deleteTx}
                         />
                       ) : (
@@ -874,6 +891,7 @@ export default function PlanEditPage() {
       </div>
 
       {/* Modals */}
+      {txActionModals}
       <TransactionModal
         open={txModal.open}
         tx={txModal.tx}
@@ -887,6 +905,7 @@ export default function PlanEditPage() {
           budgetTagIds: plan.budgets.find((budget) => budget.id === txModal.budgetId)?.tagIds,
         }}
         onOk={saveTx}
+        onPartnerCreated={(a) => setAccounts((prev) => [...prev, { ...a, type: 'PAYMENT_PARTNER' }])}
         onCancel={() => setTxModal({ open: false, tx: null, planId: null, budgetId: null })}
       />
       <BudgetModal

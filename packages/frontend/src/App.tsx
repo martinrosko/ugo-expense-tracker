@@ -2,7 +2,6 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { App as AntApp, ConfigProvider } from 'antd'
 import AppLayout from './components/AppLayout'
 import RequireAuth from './components/RequireAuth'
-import UploadPage from './pages/UploadPage'
 import ReviewPage from './pages/ReviewPage'
 import RescoTestPage from './pages/RescoTestPage'
 import PlansOverviewPage from './pages/PlansOverviewPage'
@@ -31,7 +30,7 @@ export default function App() {
                 <Route path="/partners" element={<PartnerBalancePage />} />
                 <Route path="/budget-chart" element={<BudgetChartPage />} />
                 <Route path="/account-balance" element={<AccountBalancePage />} />
-                <Route path="/upload" element={<UploadPage />} />
+                <Route path="/upload" element={<Navigate to="/review" replace />} />
                 <Route path="/review" element={<ReviewPage />} />
                 <Route path="/resco-test" element={<RescoTestPage />} />
                 <Route path="/settings" element={<Navigate to="/settings/tags" replace />} />

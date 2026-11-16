@@ -185,7 +185,7 @@ transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) =
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
   const plan = existing.plan ?? existing.budget?.plan
-  if (!plan || plan.isTemplate || plan.statusCode !== 1) { res.status(409).json({ error: 'Only transactions of active plans can be executed' }); return }
+  if (!plan || plan.isTemplate || (plan.statusCode !== 1 && plan.statusCode !== 3)) { res.status(409).json({ error: 'Only transactions of active or completed plans can be executed' }); return }
   if (existing.executedOn) { res.status(409).json({ error: 'Transaction is already executed' }); return }
 
   const executedOn = req.body?.executedOn ? new Date(req.body.executedOn) : new Date()
@@ -208,6 +208,23 @@ transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) =
     })
   })
   res.json(tx)
+})
+
+// POST /api/transactions/:id/unlink-bank-ticket
+// Detaches the bank ticket and deletes it, so the same CSV row can be imported and matched again.
+transactionsRouter.post('/:id/unlink-bank-ticket', async (req: AuthenticatedRequest, res) => {
+  const id = String(req.params.id)
+  const existing = await db.transaction.findFirst({
+    where: { id, ...ownerFilter(req.user!.sub) },
+  })
+  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  const bankTicketId = existing.bankTicketId
+  if (!bankTicketId) { res.status(409).json({ error: 'Transaction has no bank ticket' }); return }
+  await db.$transaction(async (client) => {
+    await client.transaction.update({ where: { id }, data: { bankTicketId: null } })
+    await client.bankTicket.delete({ where: { id: bankTicketId } })
+  })
+  res.status(204).end()
 })
 
 // POST /api/transactions/:id/unexecute

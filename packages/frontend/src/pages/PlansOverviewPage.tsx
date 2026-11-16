@@ -21,7 +21,7 @@ import {
   Input,
   Select,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined, EyeOutlined, ExclamationCircleOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -31,7 +31,7 @@ import { planLabel } from '../features/planLabel'
 import ChangeRecurrenceModal from '../components/ChangeRecurrenceModal'
 import ActivatePlanModal from '../components/ActivatePlanModal'
 import RowActions, { type RowAction } from '../components/RowActions'
-import { usePlanTxActions, type TxActionContext } from '../features/usePlanTxActions'
+import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
 import LogTransactionModal from '../components/LogTransactionModal'
 import { TagsField, useTagSelection } from '../components/TagPicker'
 
@@ -51,6 +51,7 @@ type TxSummary = {
   executedOn: string | null
   type: 'TRANSACTION' | 'BALANCE'
   templateId?: string | null
+  bankTicketId?: string | null
   fromAccount?: { type: string } | null
   toAccount?: { type: string } | null
 }
@@ -583,6 +584,12 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
         size="small"
         rowKey="key"
         expandable={{ expandedRowKeys: expandedKeys, onExpandedRowsChange: (keys) => setExpandedKeys(keys.map(String)), indentSize: 16 }}
+        onRow={(row) => {
+          if (!isTxTreeRow(row) || !txActions || !planId || planStatusCode === undefined) return {}
+          const executed = row.tx.executedOn !== null
+          const actions = txActions({ id: row.tx.id, planId, planStatus: planStatusCode, budgetCompleted: row.budgetCompleted, templateId: row.tx.templateId ?? null, executed })
+          return { onClick: () => void rowClickAction(actions, executed)?.onClick(), style: { cursor: 'pointer' } }
+        }}
         summary={() => (
           <Table.Summary.Row style={{ fontWeight: 600 }}>
             <Table.Summary.Cell index={0}>Total</Table.Summary.Cell>
@@ -611,6 +618,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
                 <span style={{ ...SMALL, color: overdue ? '#cf1322' : pending ? '#8c8c8c' : undefined, fontWeight: overdue ? 600 : undefined }}>
                   {overdue && <Tooltip title="Overdue"><ExclamationCircleOutlined style={{ marginRight: 4 }} /></Tooltip>}
                   {shortDate(pending ? plannedDateOf(t, planStartDate) : t.executedOn)} · {t.name ?? '(unnamed)'}
+                  {t.bankTicketId && <Tooltip title="Linked to a bank ticket"><LinkOutlined style={{ marginLeft: 6, color: '#1677ff' }} /></Tooltip>}
                 </span>
               )
             },

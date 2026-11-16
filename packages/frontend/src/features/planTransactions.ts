@@ -18,6 +18,7 @@ export type RawTx = {
   budgetId: string | null
   type: string
   templateId: string | null
+  bankTicketId?: string | null
   template: {
     name: string | null
     plannedAmount: string | null

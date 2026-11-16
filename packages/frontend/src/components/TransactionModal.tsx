@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { DatePicker, Divider, Form, Input, InputNumber, Modal, Radio, Select, Space, Tag, Typography } from 'antd'
+import { App as AntApp, Button, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Tag, Typography } from 'antd'
+import { PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import apiClient from '../api/apiClient'
 import { TagsField } from './TagPicker'
@@ -11,6 +12,18 @@ const ASSET_TYPES = new Set(['CASH', 'BANK', 'INVESTMENT'])
 type Direction = 'income' | 'expense' | 'movement'
 
 type AccountRef = { id: string; name: string; type: string }
+
+type BankTicketInfo = {
+  ticketId: string | null
+  amount: string
+  executedOn: string
+  partnerName: string | null
+  partnerAccountNumber: string | null
+  reference: string | null
+  variableSymbol: string | null
+  constantSymbol: string | null
+  specificSymbol: string | null
+}
 
 /** The part of a transaction the dialog needs; template values are used as fallback for the due day. */
 export type TxModalTx = {
@@ -81,7 +94,7 @@ const MONTH_OPTIONS = [
  * Add/edit a planned transaction ('plan') or log it as executed ('execute').
  * Execute mode asks for the execution date instead of the due day; with tx = null it logs an unplanned transaction.
  */
-export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, editTags, initialTagIds, tagDefaults, onOk, onCancel }: {
+export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, editTags, initialTagIds, tagDefaults, onPartnerCreated, bankTicketControls, onBankTicketUnlinked, onOk, onCancel }: {
   open: boolean
   tx: TxModalTx | null
   accounts: AccountRef[]
@@ -110,7 +123,13 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   tagDefaults?: { planId?: string | null; budgetId?: string | null; budgetTagIds?: string[] }
   onOk: (body: TxModalBody) => Promise<void>
   onCancel: () => void
+  /** Lets the caller add a partner account created from the dialog to its own account list */
+  onPartnerCreated?: (account: AccountRef) => void
+  /** Shows the linked bank ticket of an existing transaction with a button to unlink it */
+  bankTicketControls?: boolean
+  onBankTicketUnlinked?: () => void
 }) {
+  const { message } = AntApp.useApp()
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
   const [direction, setDirection] = useState<Direction>('expense')
@@ -128,6 +147,40 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   const watchedBudgetId = Form.useWatch('budgetId', form) as string | null | undefined
   const watchedFromId = Form.useWatch('fromAccountId', form) as string | undefined
   const watchedToId = Form.useWatch('toAccountId', form) as string | undefined
+  const [createdPartners, setCreatedPartners] = useState<AccountRef[]>([])
+  // The field that receives the partner account created in the nested dialog
+  const [newPartnerField, setNewPartnerField] = useState<'fromAccountId' | 'toAccountId' | null>(null)
+  const [newPartnerName, setNewPartnerName] = useState('')
+  const [newPartnerTagIds, setNewPartnerTagIds] = useState<string[]>([])
+  const [newPartnerTags, setNewPartnerTags] = useState<{ id: string; name: string }[]>([])
+  const [creatingPartner, setCreatingPartner] = useState(false)
+  // undefined while loading
+  const [bankTicket, setBankTicket] = useState<BankTicketInfo | null | undefined>(undefined)
+  const [unlinking, setUnlinking] = useState(false)
+
+  useEffect(() => {
+    setBankTicket(undefined)
+    if (!open || !bankTicketControls || !txId) return
+    let cancelled = false
+    apiClient.get<{ bankTicket?: BankTicketInfo | null }>(`/api/transactions/${txId}`)
+      .then((res) => { if (!cancelled) setBankTicket(res.data.bankTicket ?? null) })
+      .catch(() => { if (!cancelled) setBankTicket(null) })
+    return () => { cancelled = true }
+  }, [open, txId, bankTicketControls, resetKey])
+
+  async function unlinkBankTicket() {
+    setUnlinking(true)
+    try {
+      await apiClient.post(`/api/transactions/${txId}/unlink-bank-ticket`)
+      setBankTicket(null)
+      message.success('Bank ticket unlinked')
+      onBankTicketUnlinked?.()
+    } catch {
+      message.error('Failed to unlink bank ticket')
+    } finally {
+      setUnlinking(false)
+    }
+  }
 
   useEffect(() => {
     tagsTouched.current = false
@@ -180,7 +233,9 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
 
   const execute = mode === 'execute'
   const assetAccounts = accounts.filter((a) => ASSET_TYPES.has(a.type))
-  const partnerAccounts = accounts.filter((a) => a.type === 'PAYMENT_PARTNER')
+  const partnerAccounts = [...accounts, ...createdPartners.filter((c) => !accounts.some((a) => a.id === c.id))]
+    .filter((a) => a.type === 'PAYMENT_PARTNER')
+    .sort((a, b) => a.name.localeCompare(b.name))
 
   function directionFromTx(t: TxModalTx): Direction {
     const f = ASSET_TYPES.has(t.fromAccount?.type ?? '')
@@ -284,7 +339,46 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
 
   const hasDueDate = !execute && planIntervalType !== 'ONE_TIME'
   const isWeekly = planIntervalType === 'WEEKLY'
-  const accountRules = execute ? [{ required: true, message: 'Select an account' }] : []
+  // The payment partner side is optional; the account of the user is always required
+  const requiredRule = [{ required: true, message: 'Select an account' }]
+  const fromRules = execute && direction !== 'income' ? requiredRule : []
+  const toRules = execute && direction !== 'expense' ? requiredRule : []
+
+  function openNewPartner(field: 'fromAccountId' | 'toAccountId') {
+    setNewPartnerName('')
+    setNewPartnerTagIds([])
+    setNewPartnerField(field)
+    apiClient.get<{ id: string; name: string }[]>('/api/tags').then((res) => setNewPartnerTags(res.data)).catch(() => undefined)
+  }
+
+  const duplicatePartnerName = partnerAccounts.some((a) => a.name.trim().toLowerCase() === newPartnerName.trim().toLowerCase())
+
+  async function createPartner() {
+    const name = newPartnerName.trim()
+    if (!name || duplicatePartnerName || !newPartnerField) return
+    setCreatingPartner(true)
+    try {
+      const res = await apiClient.post<AccountRef>('/api/accounts', { name, type: 'PAYMENT_PARTNER' })
+      const created: AccountRef = { id: res.data.id, name: res.data.name, type: 'PAYMENT_PARTNER' }
+      if (newPartnerTagIds.length > 0) await apiClient.put(`/api/tags/objects/account/${created.id}`, { tagIds: newPartnerTagIds })
+      setCreatedPartners((prev) => [...prev, created])
+      onPartnerCreated?.(created)
+      form.setFieldValue(newPartnerField, created.id)
+      setNewPartnerField(null)
+    } catch {
+      message.error('Failed to create partner account')
+    } finally {
+      setCreatingPartner(false)
+    }
+  }
+
+  const newPartnerDropdown = (field: 'fromAccountId' | 'toAccountId') => (menu: ReactNode) => (
+    <>
+      {menu}
+      <Divider style={{ margin: '4px 0' }} />
+      <Button type="link" icon={<PlusOutlined />} onClick={() => openNewPartner(field)}>New partner account</Button>
+    </>
+  )
 
   return (
     <Modal
@@ -329,18 +423,24 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
           <Form.Item name="note" label="Note">
             <Input allowClear placeholder="Description…" />
           </Form.Item>
-          <Form.Item name="fromAccountId" label={fromLabel} rules={accountRules}>
+          <Form.Item name="fromAccountId" label={fromLabel} rules={fromRules}>
             <Select
               allowClear
+              showSearch={direction === 'income'}
+              optionFilterProp="label"
               placeholder={`Select ${fromLabel.toLowerCase()}…`}
               options={fromOptions.map((a) => ({ value: a.id, label: a.name }))}
+              popupRender={direction === 'income' ? newPartnerDropdown('fromAccountId') : undefined}
             />
           </Form.Item>
-          <Form.Item name="toAccountId" label={toLabel} rules={accountRules} style={{ marginBottom: execute && budgets ? undefined : 0 }}>
+          <Form.Item name="toAccountId" label={toLabel} rules={toRules} style={{ marginBottom: execute && budgets ? undefined : 0 }}>
             <Select
               allowClear
+              showSearch={direction === 'expense'}
+              optionFilterProp="label"
               placeholder={`Select ${toLabel.toLowerCase()}…`}
               options={toOptions.map((a) => ({ value: a.id, label: a.name }))}
+              popupRender={direction === 'expense' ? newPartnerDropdown('toAccountId') : undefined}
             />
           </Form.Item>
           {execute && budgets && (
@@ -426,7 +526,77 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
             </div>
           </>
         )}
+
+        {bankTicket !== undefined && (
+          <>
+            <Divider style={{ margin: '4px 0' }} />
+            <div>
+              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                <Text strong>Bank ticket</Text>
+                {bankTicket && (
+                  <Popconfirm
+                    title="Unlink the bank ticket?"
+                    description="The bank ticket is removed, so the CSV row can be imported and matched again."
+                    okText="Unlink"
+                    okType="danger"
+                    onConfirm={unlinkBankTicket}
+                  >
+                    <Button size="small" danger loading={unlinking}>Unlink</Button>
+                  </Popconfirm>
+                )}
+              </Space>
+              {!bankTicket && <div style={{ marginTop: 8 }}><Text type="secondary">No bank ticket linked</Text></div>}
+              {bankTicket && <Descriptions size="small" column={1} style={{ marginTop: 8 }} items={[
+                { key: 'date', label: 'Date', children: new Date(bankTicket.executedOn).toLocaleDateString('sk-SK') },
+                { key: 'amount', label: 'Amount', children: `${Number(bankTicket.amount).toFixed(2)} \u20ac` },
+                ...([
+                  ['partner', 'Partner', bankTicket.partnerName],
+                  ['account', 'Partner account', bankTicket.partnerAccountNumber],
+                  ['reference', 'Reference', bankTicket.reference],
+                  ['vs', 'Variable symbol', bankTicket.variableSymbol],
+                  ['ks', 'Constant symbol', bankTicket.constantSymbol],
+                  ['ss', 'Specific symbol', bankTicket.specificSymbol],
+                  ['ticket', 'Ticket ID', bankTicket.ticketId],
+                ] as const).filter(([, , value]) => !!value).map(([key, label, value]) => ({ key, label, children: value })),
+              ]} />}
+            </div>
+          </>
+        )}
       </Space>
+
+      <Modal
+        open={newPartnerField !== null}
+        title="New partner account"
+        okText="Create"
+        okButtonProps={{ disabled: !newPartnerName.trim() || duplicatePartnerName }}
+        onOk={createPartner}
+        onCancel={() => setNewPartnerField(null)}
+        confirmLoading={creatingPartner}
+        destroyOnClose
+        width={420}
+      >
+        <Space direction="vertical" style={{ width: '100%', marginTop: 12 }} size={12}>
+          <div>
+            <Text strong>Name</Text>
+            <Input
+              autoFocus
+              maxLength={100}
+              value={newPartnerName}
+              onChange={(e) => setNewPartnerName(e.target.value)}
+              onPressEnter={createPartner}
+              status={duplicatePartnerName ? 'error' : undefined}
+              style={{ marginTop: 4 }}
+            />
+            {duplicatePartnerName && <Text type="danger" style={{ fontSize: 12 }}>A partner account with this name already exists</Text>}
+          </div>
+          <div>
+            <Text strong>Predefined tags</Text>
+            <div style={{ marginTop: 4 }}>
+              <TagsField tags={newPartnerTags} value={newPartnerTagIds} onChange={setNewPartnerTagIds} />
+            </div>
+          </div>
+        </Space>
+      </Modal>
     </Modal>
   )
 }
