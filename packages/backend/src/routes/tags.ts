@@ -2,6 +2,7 @@ import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
 import { isTagObjectType, listObjectTags, listUnionTags, ownsObject, replaceObjectTags, type TagObjectType } from '../services/tagObjects.js'
+import { sortByName } from '../services/sortNames.js'
 
 export const tagsRouter = Router()
 
@@ -21,9 +22,8 @@ async function validateName(raw: unknown, ownerId: string, excludeId?: string): 
 tagsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const tags = await db.tag.findMany({
     where: { ownerId: req.user!.sub },
-    orderBy: { name: 'asc' },
   })
-  res.json(tags)
+  res.json(sortByName(tags))
 })
 
 // POST /api/tags

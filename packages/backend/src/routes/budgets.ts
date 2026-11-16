@@ -2,6 +2,7 @@ import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
 import { propagateBudgetCreated, removeTemplateBudget } from '../services/templateSync.js'
+import { sortByName } from '../services/sortNames.js'
 
 export const budgetsRouter = Router()
 
@@ -17,14 +18,13 @@ budgetsRouter.get('/', async (req: AuthenticatedRequest, res) => {
       template: { select: { name: true, amount: true, defaultAccountId: true } },
       transactions: { select: { id: true, amount: true, type: true } },
     },
-    orderBy: { name: 'asc' },
   })
-  const budgets = raw.map(({ template, ...b }) => ({
+  const budgets = sortByName(raw.map(({ template, ...b }) => ({
     ...b,
     name: b.name ?? template?.name ?? null,
     amount: b.amount ?? template?.amount ?? null,
     defaultAccountId: b.defaultAccountId ?? template?.defaultAccountId ?? null,
-  }))
+  })))
   res.json(budgets)
 })
 

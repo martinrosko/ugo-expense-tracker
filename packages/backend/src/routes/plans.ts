@@ -4,6 +4,7 @@ import type { AuthenticatedRequest } from '../middleware/auth.js'
 import { completePlanBudgets, freezeInheritedValues } from '../services/freezeInheritedValues.js'
 import { deletePlanTree } from '../services/deletePlan.js'
 import { activateDraft, changeRecurrence, getRecurrenceInfo, RecurrenceError } from '../services/recurrence.js'
+import { compareNames } from '../services/sortNames.js'
 
 export const plansRouter = Router()
 
@@ -50,7 +51,6 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
               },
             },
           },
-          orderBy: { name: 'asc' },
         },
         transactions: {
           where: { budgetId: null },
@@ -84,7 +84,7 @@ plansRouter.get('/', async (req: AuthenticatedRequest, res) => {
           fromAccount: tx.fromAccount ?? txTpl?.fromAccount ?? null,
           toAccount: tx.toAccount ?? txTpl?.toAccount ?? null,
         })),
-      })),
+      })).sort((a, b) => compareNames(a.name, b.name)),
       transactions: transactions.map(({ template: txTpl, ...tx }) => ({
         ...tx,
         name: tx.name ?? txTpl?.name ?? null,
@@ -136,12 +136,12 @@ plansRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
           template: { select: { id: true, name: true, amount: true, defaultAccountId: true } },
           transactions: { select: txSelect, orderBy: { plannedAmount: 'desc' } },
         },
-        orderBy: { name: 'asc' },
       },
       transactions: { where: { budgetId: null }, select: txSelect, orderBy: { plannedAmount: 'desc' } },
     },
   })
   if (!plan) { res.status(404).json({ error: 'Not found' }); return }
+  plan.budgets.sort((a, b) => compareNames(a.name ?? a.template?.name, b.name ?? b.template?.name))
   res.json(plan)
 })
 

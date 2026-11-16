@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client'
+import { sortByName } from './sortNames.js'
 
 export type TagObjectType = 'transaction' | 'plan' | 'budget' | 'account'
 
@@ -27,8 +28,8 @@ export async function ownsObject(client: Prisma.TransactionClient, type: TagObje
   }
 }
 
-export function listObjectTags(client: Prisma.TransactionClient, type: TagObjectType, id: string) {
-  return client.tag.findMany({ where: { objects: { some: targetOf(type, id) } }, orderBy: { name: 'asc' } })
+export async function listObjectTags(client: Prisma.TransactionClient, type: TagObjectType, id: string) {
+  return sortByName(await client.tag.findMany({ where: { objects: { some: targetOf(type, id) } } }))
 }
 
 /** Distinct tags of all given objects the owner owns, including those of the template a plan or budget is based on. */
@@ -47,10 +48,9 @@ export async function listUnionTags(client: Prisma.TransactionClient, objects: {
     ...budgets.map((b) => targetOf('budget', b.templateId!)),
   ]
   if (targets.length === 0) return []
-  return client.tag.findMany({
+  return sortByName(await client.tag.findMany({
     where: { ownerId, objects: { some: { OR: targets } } },
-    orderBy: { name: 'asc' },
-  })
+  }))
 }
 
 /** Makes the object's tags equal to tagIds (own tags only); a missing tagIds leaves them untouched. */

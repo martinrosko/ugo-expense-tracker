@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { AccountType } from '@prisma/client'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
+import { sortByName } from '../services/sortNames.js'
 
 export const accountsRouter = Router()
 
@@ -12,9 +13,8 @@ accountsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const accounts = await db.account.findMany({
     where: { ownerId: req.user!.sub, ...(accountType ? { type: accountType } : {}) },
     ...(withTags === 'true' ? { include: { tags: { include: { tag: true } } } } : {}),
-    orderBy: { name: 'asc' },
   })
-  res.json(accounts)
+  res.json(sortByName(accounts))
 })
 
 // GET /api/accounts/:id
