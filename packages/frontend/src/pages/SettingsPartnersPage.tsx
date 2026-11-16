@@ -18,6 +18,7 @@ export default function SettingsPartnersPage() {
   const [editing, setEditing] = useState<PartnerAccount | null>(null)
   const [tagIds, setTagIds] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
+  const [search, setSearch] = useState('')
   const [form] = Form.useForm<{ name: string }>()
 
   const load = useCallback(async () => {
@@ -61,6 +62,11 @@ export default function SettingsPartnersPage() {
     }
   }
 
+  const needle = search.trim().toLowerCase()
+  const visiblePartners = needle
+    ? partners.filter((p) => p.name.toLowerCase().includes(needle) || p.tags.some(({ tag }) => tag.name.toLowerCase().includes(needle)))
+    : partners
+
   const columns: ColumnsType<PartnerAccount> = [
     { title: 'Name', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name) },
     {
@@ -82,11 +88,19 @@ export default function SettingsPartnersPage() {
     <Space orientation="vertical" size="large" style={{ width: '100%' }}>
       <Title level={3} style={{ margin: 0 }}>Partner accounts</Title>
 
+      <Input.Search
+        allowClear
+        placeholder="Search by name or tag…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        style={{ maxWidth: 360 }}
+      />
+
       <Table
         rowKey="id"
         size="small"
         loading={loading}
-        dataSource={partners}
+        dataSource={visiblePartners}
         columns={columns}
         pagination={{ pageSize: 30, hideOnSinglePage: true }}
       />
