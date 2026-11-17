@@ -45,8 +45,8 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
       bankTicket: true,
       fromAccount: { select: { id: true, name: true, type: true } },
       toAccount: { select: { id: true, name: true, type: true } },
-      plan: { select: { id: true, name: true, startDate: true, endDate: true } },
-      budget: { select: { id: true, name: true, plan: { select: { id: true, name: true, startDate: true, endDate: true } } } },
+      plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true } },
+      budget: { select: { id: true, name: true, statusCode: true, plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true } } } },
     },
     orderBy: { executedOn: 'desc' },
   })

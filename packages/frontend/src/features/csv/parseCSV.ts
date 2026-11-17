@@ -17,6 +17,11 @@ const COLUMN_MAP: Record<keyof CsvRow, string> = {
 // Fallback partner name when Doplňujúce informácie is empty (e.g. transfers)
 const PARTNER_FALLBACK_COL = 'Názov partnera'
 
+/** Descriptions can end in "/VS0000003121/SS2260318334/KS0608"; the part after the VS segment varies, so comparisons drop it. */
+export function stripBankSymbols(s: string): string {
+  return s.replace(/(\/VS[^/\s]*)\/\S*/i, '$1').trim()
+}
+
 /** Convert VÚB date format YYYYMMDD → ISO yyyy-MM-dd */
 function parseDate(raw: string): string {
   const s = raw.trim()

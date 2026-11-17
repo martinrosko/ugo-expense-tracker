@@ -3,7 +3,7 @@ import type { AccountRef, Tx } from '../planTransactions'
 
 export type TagRef = { id: string; name: string }
 
-/** A planned, not yet executed transaction of an active plan. */
+/** A transaction without a bank ticket, executed or still pending, of an active or completed plan. */
 export type Candidate = Tx & { planId: string; planLabel: string }
 
 /** Where a new transaction can be created: a plan's general area or one of its budgets. */
@@ -13,6 +13,10 @@ export type Target = {
   budgetId: string | null
   /** Null for the plan's general area */
   budgetName: string | null
+  /** Template of the budget, which links the same budget across the plan's periods */
+  budgetTemplateId: string | null
+  /** Template of the plan, which links the same plan across periods */
+  planTemplateId: string | null
   label: string
   completed: boolean
   startDate: string | null

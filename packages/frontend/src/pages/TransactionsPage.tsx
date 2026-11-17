@@ -17,7 +17,7 @@ import {
   Segmented,
   Checkbox,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, LineChartOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, LineChartOutlined, LinkOutlined } from '@ant-design/icons'
 import {
   ResponsiveContainer,
   LineChart,
@@ -34,6 +34,8 @@ import isoWeek from 'dayjs/plugin/isoWeek'
 import { useSearchParams } from 'react-router-dom'
 import apiClient from '../api/apiClient'
 import { planLabel } from '../features/planLabel'
+import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
+import RowActions from '../components/RowActions'
 
 dayjs.extend(isoWeek)
 
@@ -54,10 +56,12 @@ type Transaction = {
   executedOn: string | null
   plannedOn: string | null
   type: string
+  templateId?: string | null
+  bankTicketId?: string | null
   fromAccount?: Account | null
   toAccount?: Account | null
-  plan?: { id: string; name: string | null } | null
-  budget?: { id: string; name: string | null } | null
+  plan?: { id: string; name: string | null; statusCode: number } | null
+  budget?: { id: string; name: string | null; statusCode: number; plan?: { id: string; name: string | null; statusCode: number } | null } | null
   tags?: { tag: { id: string; name: string; color?: string | null } }[]
 }
 
@@ -249,6 +253,11 @@ export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  // Kept here because the table unmounts while reloading
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const { actionsFor, modals } = usePlanTxActions(() => setReloadKey((k) => k + 1))
 
   // View mode: list or chart
   const [viewMode, setViewMode] = useState<'list' | 'chart'>('list')
@@ -414,9 +423,10 @@ export default function TransactionsPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [mode, period, customFrom, customTo, apiPlanId, apiBudgetId, filterAccountId])
+  }, [mode, period, customFrom, customTo, apiPlanId, apiBudgetId, filterAccountId, reloadKey])
 
   // Client-side amount filter
+  useEffect(() => { setPage(1) }, [mode, period, customFrom, customTo, apiPlanId, apiBudgetId, filterAccountId, minAmount, maxAmount])
   const filteredTxs = useMemo(() => {
     if (minAmount === null && maxAmount === null) return transactions
     return transactions.filter((tx) => {
@@ -426,6 +436,14 @@ export default function TransactionsPage() {
       return true
     })
   }, [transactions, minAmount, maxAmount])
+
+  const txContext = (tx: Transaction): TxActionContext | null => {
+    const plan = tx.plan ?? tx.budget?.plan
+    if (!plan) return null
+    // The plan list is the source of the status, so the actions work even when the transaction payload lacks it
+    const planStatus = allPlans.find((p) => p.id === plan.id)?.statusCode ?? plan.statusCode
+    return { id: tx.id, planId: plan.id, planStatus, budgetCompleted: tx.budget?.statusCode === 3, templateId: tx.templateId ?? null, executed: true }
+  }
 
   const columns = useMemo(() => [
     {
@@ -437,10 +455,15 @@ export default function TransactionsPage() {
     },
     {
       title: 'Name',
-      dataIndex: 'name',
       key: 'name',
       ellipsis: true,
-      render: (v: string | null) => v ?? <Text type="secondary">(unnamed)</Text>,
+      render: (_: unknown, row: Transaction) => (
+        <Space size={4}>
+          {row.name ?? <Text type="secondary">(unnamed)</Text>}
+          {row.templateId && <Tag style={{ fontSize: 11 }}>template</Tag>}
+          {row.bankTicketId && <LinkOutlined style={{ color: '#1677ff' }} title="Linked to a bank ticket" />}
+        </Space>
+      ),
     },
     {
       title: 'From',
@@ -491,7 +514,17 @@ export default function TransactionsPage() {
         </Space>
       ),
     },
-  ], [apiPlanId, apiBudgetId])
+    {
+      title: '',
+      key: 'actions',
+      width: 60,
+      align: 'right' as const,
+      render: (_: unknown, row: Transaction) => {
+        const ctx = txContext(row)
+        return ctx ? <RowActions actions={actionsFor(ctx)} /> : null
+      },
+    },
+  ], [apiPlanId, apiBudgetId, actionsFor]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -682,8 +715,18 @@ export default function TransactionsPage() {
             columns={columns}
             rowKey="id"
             size="small"
-            pagination={{ pageSize: 50, hideOnSinglePage: true }}
+            pagination={{
+              current: page,
+              pageSize,
+              showSizeChanger: true,
+              pageSizeOptions: [20, 50, 100, 200],
+              onChange: (p, s) => { setPage(p); setPageSize(s) },
+            }}
             locale={{ emptyText: 'No executed transactions found.' }}
+            onRow={(row) => {
+              const ctx = txContext(row)
+              return ctx ? { onClick: () => void rowClickAction(actionsFor(ctx), true)?.onClick(), style: { cursor: 'pointer' } } : {}
+            }}
             summary={(rows) => {
               let income = 0
               let expense = 0
@@ -697,7 +740,7 @@ export default function TransactionsPage() {
               return (
                 <>
                   <Table.Summary.Row>
-                    <Table.Summary.Cell index={0} colSpan={columns.length - 2}>
+                    <Table.Summary.Cell index={0} colSpan={columns.length - 3}>
                       <span style={{ color: '#3f8600' }}>Income</span>
                       {' / '}
                       <span style={{ color: '#cf1322' }}>Expense</span>
@@ -707,14 +750,14 @@ export default function TransactionsPage() {
                       {' / '}
                       <span style={{ color: '#cf1322' }}>{fmt(-expense)}</span>
                     </Table.Summary.Cell>
-                    <Table.Summary.Cell index={2} />
+                    <Table.Summary.Cell index={2} colSpan={2} />
                   </Table.Summary.Row>
                   <Table.Summary.Row style={{ fontWeight: 600 }}>
-                    <Table.Summary.Cell index={0} colSpan={columns.length - 2}>Balance</Table.Summary.Cell>
+                    <Table.Summary.Cell index={0} colSpan={columns.length - 3}>Balance</Table.Summary.Cell>
                     <Table.Summary.Cell index={1} align="right">
                       <span style={{ color: balance < 0 ? '#cf1322' : balance > 0 ? '#3f8600' : undefined, fontWeight: 600 }}>{fmt(balance > 0 ? balance : -Math.abs(balance))}</span>
                     </Table.Summary.Cell>
-                    <Table.Summary.Cell index={2} />
+                    <Table.Summary.Cell index={2} colSpan={2} />
                   </Table.Summary.Row>
                 </>
               )
@@ -722,6 +765,7 @@ export default function TransactionsPage() {
           />
         </>
       )}
+      {modals}
     </Space>
   )
 }

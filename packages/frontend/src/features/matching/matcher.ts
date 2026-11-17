@@ -53,11 +53,13 @@ export function matchAll(
   tags: TagRef[],
   history: { tx: Tx; target: Target }[],
   targets: Target[],
+  duplicates: ReadonlySet<number> = new Set(),
+  pastBooking: (row: CsvRow) => { partner?: AccountRef; target?: Target } | undefined = () => undefined,
 ): MatchResult[] {
   // Best pairs first, so every planned transaction is matched to at most one row
   const targetByKey = new Map(targets.map((t) => [t.key, t]))
   const pairs = csvRows.flatMap((row, rowIndex) =>
-    candidates.flatMap((tx) => {
+    duplicates.has(rowIndex) ? [] : candidates.flatMap((tx) => {
       const target = targetByKey.get(targetKey(tx.planId, tx.budgetId))
       const distance = target ? targetDistance(target, row.executedon) : 0
       if (Number.isFinite(distance) && distance > PLAN_TOLERANCE_DAYS) return []
@@ -77,15 +79,17 @@ export function matchAll(
   }
 
   return csvRows.map((row, rowIndex) => {
+    if (duplicates.has(rowIndex)) return { csvRow: row, rowIndex, tags: [], confidence: 0, isDuplicate: true }
     const match = bestFor.get(rowIndex)
-    const partner = findPartner(row.partnername, partners)
+    const past = pastBooking(row)
+    const partner = past?.partner ?? findPartner(row.partnername, partners)
     return {
       csvRow: row,
       rowIndex,
       matched: match?.tx,
       target: match
         ? targets.find((t) => t.key === targetKey(match.tx.planId, match.tx.budgetId))
-        : suggestTarget(partner, history, targets, row.executedon),
+        : past?.target ?? suggestTarget(partner, history, targets, row.executedon),
       partner,
       tags: findTagsForRow(row, tags),
       confidence: match?.score ?? topScore.get(rowIndex) ?? 0,

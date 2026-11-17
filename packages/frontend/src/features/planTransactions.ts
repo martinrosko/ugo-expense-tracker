@@ -34,6 +34,7 @@ export type RawBudget = {
   name: string | null
   amount: string | null
   statusCode: number
+  templateId?: string | null
   template: { name: string | null; amount: string | null } | null
   transactions: RawTx[]
 }

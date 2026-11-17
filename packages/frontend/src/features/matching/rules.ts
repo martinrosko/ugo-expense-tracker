@@ -74,6 +74,45 @@ export function findTagsForRow(row: CsvRow, tags: TagRef[]): TagRef[] {
 
 export const targetKey = (planId: string, budgetId: string | null) => `${planId}|${budgetId ?? ''}`
 
+export const TIER_LABELS = ['Exact match', 'Close match', 'Possible match', 'Other'] as const
+
+const norm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+const localDay = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())
+
+/**
+ * Orders candidates by how well they fit the bank row. Tiers (0 = best):
+ * 0 same amount and day, 1 amount within 5 % and ±2 days, 2 amount within 15 % and ±5 days, 3 the rest.
+ * Inside a tier, candidates whose account is named in the bank row come first, then the nearest date.
+ */
+export function rankCandidates<T extends Tx>(row: CsvRow, candidates: T[], bankAccountId: string): { candidate: T; tier: number }[] {
+  const text = norm([row.partnername, row.reference, row.partneraccountnumber].join(' '))
+  const partnerName = norm(row.partnername)
+  const rowAmount = Math.abs(row.amount)
+  const rowDay = Date.parse(row.executedon.slice(0, 10))
+
+  return candidates
+    .map((candidate) => {
+      const txAmount = Math.abs((candidate.executedOn ? candidate.amount : candidate.plannedAmount) ?? candidate.plannedAmount ?? 0)
+      const amountDiff = txAmount === 0 ? Infinity : Math.abs(rowAmount - txAmount) / txAmount
+      const date = candidate.executedOn ?? candidate.plannedDate
+      const days = date && !isNaN(rowDay) ? Math.abs(localDay(date) - rowDay) / DAY_MS : Infinity
+
+      const tier =
+        Math.abs(rowAmount - txAmount) < 0.005 && days === 0 ? 0
+        : amountDiff <= 0.05 && days <= 2 ? 1
+        : amountDiff <= 0.15 && days <= 5 ? 2
+        : 3
+      const accountHint = [candidate.from, candidate.to].some((a) => {
+        if (!a || a.id === bankAccountId) return false
+        const name = norm(a.name)
+        return name.length >= 3 && (text.includes(name) || (partnerName !== '' && stringSimilarity(partnerName, name) >= 0.5))
+      })
+      return { candidate, tier, accountHint, days }
+    })
+    .sort((a, b) => a.tier - b.tier || Number(b.accountHint) - Number(a.accountHint) || (a.days === b.days ? 0 : a.days - b.days))
+    .map(({ candidate, tier }) => ({ candidate, tier }))
+}
+
 const DAY_MS = 86_400_000
 const dayOf = (s: string) => Date.parse(s.slice(0, 10))
 
@@ -100,6 +139,31 @@ export function rankTargets(targets: Target[], date: string): Target[] {
       return a.dist === b.dist ? 0 : a.dist - b.dist
     })
     .map((x) => x.t)
+}
+
+/** Where an earlier bank ticket of the same counterparty ended up. */
+export type PastBooking = {
+  partner: AccountRef | null
+  budgetId: string | null
+  budgetName: string | null
+  budgetTemplateId: string | null
+  planTemplateId: string | null
+}
+
+/**
+ * The same budget as in the past booking, taken from the plan period containing the date:
+ * matched by budget template, else by name. A general-area booking maps to the general area.
+ */
+export function targetFromPast(past: PastBooking, targets: Target[], date: string): Target | undefined {
+  const inPeriod = rankTargets(targets, date).filter((t) => targetDistance(t, date) === 0)
+  const samePlan = past.planTemplateId ? inPeriod.filter((t) => t.planTemplateId === past.planTemplateId) : []
+  const pick = (pool: Target[]) =>
+    pool.find((t) =>
+      past.budgetId === null
+        ? t.budgetId === null
+        : t.budgetId !== null && (past.budgetTemplateId ? t.budgetTemplateId === past.budgetTemplateId : t.budgetName === past.budgetName),
+    )
+  return pick(samePlan) ?? pick(inPeriod)
 }
 
 /**

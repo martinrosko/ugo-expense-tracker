@@ -249,11 +249,13 @@ type BudgetStats = {
   expPlanned: number; expActual: number; expReserved: number
 }
 
-function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: string | null, planEndDate?: string | null): BudgetStats {
+function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: string | null, planEndDate?: string | null, planCompleted = false): BudgetStats {
   const allTxs = (b.transactions ?? []).filter((t) => t.type === 'TRANSACTION')
   const txs = from && to ? allTxs.filter((t) => inPeriod(t, from, to, planStartDate)) : allTxs
   const actual = txs.filter((t) => t.executedOn !== null).reduce((s, t) => s + signedAmount(t, t.amount), 0)
   const txPlannedSum = txs.reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0)
+  // A completed budget keeps no envelope reservation; only its unexecuted transactions still reserve
+  const completed = planCompleted || b.statusCode === 3
   // Budget envelope prorated to the viewing period
   const fullEnvelope = b.amount ? -Math.abs(parse(b.amount)) : 0
   const portion = periodPortion(from, to, planStartDate, planEndDate)
@@ -264,7 +266,7 @@ function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: st
   const unplannedActual = txs
     .filter((t) => t.executedOn !== null && !t.dueDateConfig)
     .reduce((s, t) => s + signedAmount(t, t.amount), 0)
-  let reservation = fullEnvelope - unplannedActual // envelope minus what was already spent
+  let reservation = completed ? 0 : fullEnvelope - unplannedActual // envelope minus what was already spent
   // Clamp: can't reserve more than the envelope, can't go below 0
   if (fullEnvelope <= 0) {
     reservation = Math.max(fullEnvelope, Math.min(0, reservation))
@@ -289,8 +291,8 @@ function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: st
   }
   const _actS = splitByKind(txs, 'amount', { executedOnly: true })
   const _plnS = splitByKind(txs, 'plannedAmount')
-  // Pending transactions from a template are committed spending on top of the envelope
-  const pendingTpl = txs.filter((t) => t.executedOn === null && t.templateId)
+  // Pending transactions from a template are committed spending on top of the envelope; in a completed budget all pending ones are
+  const pendingTpl = txs.filter((t) => t.executedOn === null && (completed || t.templateId))
   const pendingTplSigned = pendingTpl.reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0)
   const pendingTplSplit = splitByKind(pendingTpl, 'plannedAmount')
   return {
@@ -303,7 +305,7 @@ function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: st
 }
 
 function planStats(plan: PlanDetailed, from?: Date, to?: Date): BudgetStats {
-  const bs = (plan.budgets ?? []).map((b) => budgetStats(b, from, to, plan.startDate, plan.endDate))
+  const bs = (plan.budgets ?? []).map((b) => budgetStats(b, from, to, plan.startDate, plan.endDate, plan.statusCode === 3))
   const allDirectTxs = (plan.transactions ?? []).filter((t) => t.type === 'TRANSACTION')
   const directTxs = from && to ? allDirectTxs.filter((t) => inPeriod(t, from, to, plan.startDate)) : allDirectTxs
   const directActual = directTxs.filter((t) => t.executedOn !== null).reduce((s, t) => s + signedAmount(t, t.amount), 0)
@@ -479,9 +481,9 @@ function txSplit(tx: TxSummary, raw: string | null): { inc: number; exp: number 
 function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, planEndDate, planId, planName, planStatusCode, splitView, txActions, onLogTransaction }: { budgets: BudgetWithTx[]; directTxs?: TxSummary[]; scheduled?: boolean; from?: Date; to?: Date; planStartDate?: string | null; planEndDate?: string | null; planId?: string; planName?: string | null; planStatusCode?: number; splitView?: boolean; txActions?: (ctx: TxActionContext) => RowAction[]; onLogTransaction?: (planId: string, budgetId: string | null) => void }) {
   const navigate = useNavigate()
   const rows: BudgetRow[] = (budgets ?? []).map((b) => {
-    const s = budgetStats(b, from, to, planStartDate, planEndDate)
+    const s = budgetStats(b, from, to, planStartDate, planEndDate, planStatusCode === 3)
     const ep = execProgress(s)
-    return { key: b.id, name: b.name ?? '—', ...s, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped, envelope: b.amount ? -Math.abs(parse(b.amount)) : null, unplanned: unplannedExecuted(b.transactions ?? [], from, to, planStartDate), ownReserved: withoutAmounts(s, pendingReserved(b.transactions ?? [], from, to, planStartDate, (t) => !!t.templateId)), children: txChildren(b.transactions ?? [], from, to, planStartDate, b.statusCode === 3) }
+    return { key: b.id, name: b.name ?? '—', ...s, pct: ep.pct, rawPct: ep.rawPct, status: ep.status, flipped: ep.flipped, envelope: b.amount ? -Math.abs(parse(b.amount)) : null, unplanned: unplannedExecuted(b.transactions ?? [], from, to, planStartDate), ownReserved: withoutAmounts(s, pendingReserved(b.transactions ?? [], from, to, planStartDate, (t) => planStatusCode === 3 || b.statusCode === 3 || !!t.templateId)), children: txChildren(b.transactions ?? [], from, to, planStartDate, b.statusCode === 3) }
   })
 
   // Add uncategorized row if there are direct plan transactions

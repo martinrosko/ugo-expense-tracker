@@ -12,6 +12,18 @@ bankTicketsRouter.get('/', async (req: AuthenticatedRequest, res) => {
       account: { ownerId: req.user!.sub },
       ...(accountId ? { accountId: String(accountId) } : {}),
     },
+    include: {
+      // Lets the import suggest partner and budget from what the same counterparty was booked to before
+      transaction: {
+        select: {
+          id: true,
+          fromAccount: { select: { id: true, name: true, type: true } },
+          toAccount: { select: { id: true, name: true, type: true } },
+          plan: { select: { id: true, templateId: true } },
+          budget: { select: { id: true, name: true, templateId: true, template: { select: { name: true } }, plan: { select: { id: true, templateId: true } } } },
+        },
+      },
+    },
     orderBy: { executedOn: 'desc' },
   })
   res.json(tickets)
@@ -43,7 +55,7 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
     res.status(403).json({ error: 'Forbidden' }); return
   }
 
-  // Upsert on (accountId, ticketId) to deduplicate re-imports
+  // Upsert on (accountId, ticketId, executedOn) to deduplicate re-imports
   const created = await Promise.all(
     rows.map((r: {
       accountId: string; ticketId?: string; name?: string; amount: number;
@@ -51,7 +63,7 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
       reference?: string; variableSymbol?: string; constantSymbol?: string; specificSymbol?: string;
     }) =>
       db.bankTicket.upsert({
-        where: { accountId_ticketId: { accountId: r.accountId, ticketId: r.ticketId ?? '' } },
+        where: { accountId_ticketId_executedOn: { accountId: r.accountId, ticketId: r.ticketId ?? '', executedOn: new Date(r.executedOn) } },
         create: {
           name: r.name,
           amount: r.amount,

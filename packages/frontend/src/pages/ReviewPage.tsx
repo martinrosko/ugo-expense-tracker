@@ -11,8 +11,8 @@ import { parseCSV } from '../features/csv/parseCSV'
 import type { CsvRow } from '../features/csv/types'
 import { analyzeCsv, type Analysis } from '../features/matching/analyze'
 import type { Candidate, MatchResult } from '../features/matching/types'
-import { rankTargets, targetKey } from '../features/matching/rules'
-import { apiError } from '../features/planTransactions'
+import { rankCandidates, rankTargets, targetKey, TIER_LABELS } from '../features/matching/rules'
+import { apiError, type AccountRef } from '../features/planTransactions'
 
 const { Title, Text } = Typography
 const { Dragger } = Upload
@@ -102,10 +102,22 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
 
   const defaultExecutedOn = (row: EditableRow) => new Date(`${row.csvRow.executedon}T12:00:00`).toISOString()
 
+  /** Accounts of a matched transaction, with a wrongly logged own (non-partner) account on the bank side replaced by the imported bank account. */
+  function matchedAccounts(m: Candidate, amount: number): { from: string | null; to: string | null; fixed: AccountRef | null } {
+    const bank = state.accountId
+    const wrong = (side: AccountRef | null, other: AccountRef | null) =>
+      !!side && side.id !== bank && side.type !== 'PAYMENT_PARTNER' && other?.id !== bank
+    const from = m.from?.id ?? null
+    const to = m.to?.id ?? null
+    if (amount < 0 && wrong(m.from, m.to)) return { from: bank, to, fixed: m.from }
+    if (amount >= 0 && wrong(m.to, m.from)) return { from, to: bank, fixed: m.to }
+    return { from, to, fixed: null }
+  }
+
   /** From/to account ids the transaction will get: dialog values, else the matched transaction's, else bank account and partner. */
   function rowAccounts(row: EditableRow): { from: string | null; to: string | null } {
     if (row.details) return { from: row.details.fromAccountId, to: row.details.toAccountId }
-    if (row.matched) return { from: row.matched.from?.id ?? null, to: row.matched.to?.id ?? null }
+    if (row.matched) return matchedAccounts(row.matched, row.csvRow.amount)
     const bank = state.accountId
     const partner = row.partner?.id ?? null
     return row.csvRow.amount < 0 ? { from: bank, to: partner } : { from: partner, to: bank }
@@ -188,7 +200,12 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
             // Already logged by hand: only link the bank ticket, keeping its date and amount unless edited in the dialog
             await apiClient.patch(`/api/transactions/${id}`, {
               bankTicketId,
-              ...(row.details ? { executedOn, amount, name: row.details.name ?? undefined, fromAccountId: acc.from, toAccountId: acc.to } : {}),
+              ...(row.details
+                ? { executedOn, amount, name: row.details.name ?? undefined, fromAccountId: acc.from, toAccountId: acc.to }
+                : {
+                    fromAccountId: acc.from !== (m.from?.id ?? null) ? acc.from : undefined,
+                    toAccountId: acc.to !== (m.to?.id ?? null) ? acc.to : undefined,
+                  }),
             })
           } else {
             // Only values that differ from the planned transaction become overrides
@@ -293,6 +310,7 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
           placeholder="— select plan / budget —"
           allowClear
           showSearch
+          disabled={row.isDuplicate}
           optionFilterProp="label"
           style={{ width: '100%' }}
           options={rankTargets(targets, row.csvRow.executedon).map((t) => ({
@@ -311,20 +329,33 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
       title: 'Planned Transaction',
       width: 280,
       render: (_, row) => {
-        const rowTime = new Date(row.csvRow.executedon).getTime()
-        const dateOf = (c: Candidate) => (c.executedOn ?? c.plannedDate)?.getTime() ?? Infinity
-        const byDistance = (a: Candidate, b: Candidate) => Math.abs(dateOf(a) - rowTime) - Math.abs(dateOf(b) - rowTime)
-        const inTarget = (c: Candidate) => !row.target || targetKey(c.planId, c.budgetId) === row.target.key
-        const option = (c: Candidate, withPlan: boolean) => ({
-          value: c.id,
-          label: `${c.executedOn ? `${fmtDate(c.executedOn)} · executed · ${c.name}${fmtAmount(c.amount)}` : `${fmtDate(c.plannedDate)} · ${c.name}${fmtAmount(c.plannedAmount)}`}${withPlan ? ` · ${c.planLabel} › ${c.budgetName}` : ''}`,
-        })
-        // Planned transactions of other plans/budgets stay selectable; picking one switches the row's target
-        const own = candidates.filter(inTarget).sort(byDistance).map((c) => option(c, !row.target))
-        const others = row.target ? candidates.filter((c) => !inTarget(c)).sort(byDistance).map((c) => option(c, true)) : []
-        const options: SelectProps['options'] = row.target
-          ? [{ label: 'Selected plan / budget', options: own }, { label: 'Other plans / budgets', options: others }].filter((g) => g.options.length > 0)
-          : own
+        if (row.isDuplicate) {
+          const c = row.matched
+          if (!c) return <Text type="secondary">Already imported (linked transaction not found in loaded plans)</Text>
+          return (
+            <div>
+              <div>{c.executedOn ? `${fmtDate(c.executedOn)} · ${c.name}${fmtAmount(c.amount)}` : `${fmtDate(c.plannedDate)} · ${c.name}${fmtAmount(c.plannedAmount)}`}</div>
+              <Text type="secondary" style={{ fontSize: 11 }}>{c.planLabel} › {c.budgetName}</Text>
+            </div>
+          )
+        }
+        // Only the selected plan / budget; all of them when none is selected
+        const own = rankCandidates(
+          row.csvRow,
+          candidates.filter((c) => !row.target || targetKey(c.planId, c.budgetId) === row.target.key),
+          state.accountId,
+        )
+        const option = ({ candidate: c }: { candidate: Candidate }) => {
+          const fixed = matchedAccounts(c, row.csvRow.amount).fixed
+          return {
+            value: c.id,
+            label: `${c.executedOn ? `${fmtDate(c.executedOn)} · executed · ${c.name}${fmtAmount(c.amount)}` : `${fmtDate(c.plannedDate)} · ${c.name}${fmtAmount(c.plannedAmount)}`}${row.target ? '' : ` · ${c.planLabel} › ${c.budgetName}`}${fixed ? ` · account ${fixed.name} will be corrected` : ''}`,
+          }
+        }
+        const options: SelectProps['options'] = TIER_LABELS.map((label, tier) => ({
+          label,
+          options: own.filter((r) => r.tier === tier).map(option),
+        })).filter((g) => g.options.length > 0)
         return (
           <Select
             value={row.matched?.id}
@@ -350,6 +381,7 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
         const nameOf = (id: string | null) => allAccounts.find((a) => a.id === id)?.name ?? '—'
         if (row.details) return <Text type="secondary">{nameOf(row.details.fromAccountId)} → {nameOf(row.details.toAccountId)}</Text>
         if (row.matched) return <Text type="secondary">{(row.matched.to?.type === 'PAYMENT_PARTNER' ? row.matched.to : row.matched.from)?.name ?? '—'}</Text>
+        if (row.isDuplicate) return <Text type="secondary">—</Text>
         return (
           <Select
             value={row.partner?.id}
@@ -367,7 +399,7 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
     {
       title: 'Tags',
       width: 200,
-      render: (_, row) => (
+      render: (_, row) => row.isDuplicate ? <Text type="secondary">—</Text> : (
         <TagsField
           tags={tags}
           value={row.tags.map((t) => t.id)}
