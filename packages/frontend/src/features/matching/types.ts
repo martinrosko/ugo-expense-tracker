@@ -4,7 +4,12 @@ import type { AccountRef, Tx } from '../planTransactions'
 export type TagRef = { id: string; name: string }
 
 /** A transaction without a bank ticket, executed or still pending, of an active or completed plan. */
-export type Candidate = Tx & { planId: string; planLabel: string }
+export type Candidate = Tx & {
+  planId: string
+  planLabel: string
+  /** An executed movement that already has the bank ticket of its other account; a row picking it is stored as the second ticket */
+  pairOnly?: boolean
+}
 
 /** Where a new transaction can be created: a plan's general area or one of its budgets. */
 export type Target = {
@@ -41,6 +46,13 @@ export interface MatchResult {
   /** 0–1 composite score (amount 50 % + date 30 % + partner 20 %). */
   confidence: number
 
+  /** Movement this row looks like the other side of; applied when the user clears a wrong planned transaction. */
+  pairSuggestion?: Candidate
+
   /** True when a bank ticket with this ticketId already exists for the account. */
   isDuplicate: boolean
+
+  /** Duplicates only: the stored ticket, and whether it was processed as the second side of a movement. */
+  ticketDbId?: string
+  paired?: boolean
 }

@@ -135,12 +135,16 @@ model BankTicket {
   ticketId             String?
   account              Account  @relation(fields: [accountId], references: [id])
   accountId            String
-  transaction          Transaction?
+  transaction          Transaction? @relation("TxBankTicket")
+  /// Second ticket of a movement between two own accounts: processed without being the transaction's own ticket
+  pairedTransaction    Transaction? @relation("TxPairedTickets", fields: [pairedTransactionId], references: [id], onDelete: SetNull)
+  pairedTransactionId  String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
   /// The bank's document number repeats across dates, so the date is part of the identity
   @@unique([accountId, ticketId, executedOn])
+  @@index([pairedTransactionId])
 }
 
 // ─── Transactions ─────────────────────────────────────────────────────────────
@@ -156,8 +160,9 @@ model Transaction {
   type          TransactionType
   stateCode     Int             @default(0)
   statusCode    Int             @default(0)
-  bankTicket    BankTicket?     @relation(fields: [bankTicketId], references: [id])
+  bankTicket    BankTicket?     @relation("TxBankTicket", fields: [bankTicketId], references: [id])
   bankTicketId  String?         @unique
+  pairedTickets BankTicket[]    @relation("TxPairedTickets")
   budget        Budget?         @relation(fields: [budgetId], references: [id])
   budgetId      String?
   plan          Plan?           @relation(fields: [planId], references: [id])

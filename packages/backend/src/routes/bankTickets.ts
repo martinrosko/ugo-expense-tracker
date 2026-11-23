@@ -55,12 +55,21 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
     res.status(403).json({ error: 'Forbidden' }); return
   }
 
+  const pairedIds = [...new Set(rows.map((r: { pairedTransactionId?: string }) => r.pairedTransactionId).filter(Boolean) as string[])]
+  if (pairedIds.length > 0) {
+    const ownedTx = await db.transaction.count({
+      where: { id: { in: pairedIds }, OR: [{ budget: { plan: { ownerId: req.user!.sub } } }, { plan: { ownerId: req.user!.sub } }] },
+    })
+    if (ownedTx !== pairedIds.length) { res.status(403).json({ error: 'Forbidden' }); return }
+  }
+
   // Upsert on (accountId, ticketId, executedOn) to deduplicate re-imports
   const created = await Promise.all(
     rows.map((r: {
       accountId: string; ticketId?: string; name?: string; amount: number;
       executedOn: string; partnerName?: string; partnerAccountNumber?: string;
       reference?: string; variableSymbol?: string; constantSymbol?: string; specificSymbol?: string;
+      pairedTransactionId?: string; processed?: boolean;
     }) =>
       db.bankTicket.upsert({
         where: { accountId_ticketId_executedOn: { accountId: r.accountId, ticketId: r.ticketId ?? '', executedOn: new Date(r.executedOn) } },
@@ -76,12 +85,29 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
           specificSymbol: r.specificSymbol,
           ticketId: r.ticketId,
           accountId: r.accountId,
+          pairedTransactionId: r.pairedTransactionId,
+          // stateCode 1 = processed without a transaction of its own
+          stateCode: r.processed ? 1 : undefined,
         },
-        update: {},
+        update: {
+          ...(r.pairedTransactionId ? { pairedTransactionId: r.pairedTransactionId } : {}),
+          ...(r.processed ? { stateCode: 1 } : {}),
+        },
       })
     )
   )
   res.status(201).json(created)
+})
+
+// POST /api/bank-tickets/:id/unpair  (marks a processed ticket as unprocessed again)
+bankTicketsRouter.post('/:id/unpair', async (req: AuthenticatedRequest, res) => {
+  const id = String(req.params.id)
+  const existing = await db.bankTicket.findFirst({
+    where: { id, account: { ownerId: req.user!.sub } },
+  })
+  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  const ticket = await db.bankTicket.update({ where: { id }, data: { pairedTransactionId: null, stateCode: 0 } })
+  res.json(ticket)
 })
 
 // DELETE /api/bank-tickets/:id

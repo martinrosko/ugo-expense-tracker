@@ -13,6 +13,8 @@ type BankTicketRow = {
   executedOn: string
   partnerName: string | null
   partnerAccountNumber: string | null
+  pairedTransactionId: string | null
+  stateCode: number
   transaction: {
     fromAccount: AccountRef | null
     toAccount: AccountRef | null
@@ -37,6 +39,8 @@ type PlanItem = {
 export type Analysis = {
   results: MatchResult[]
   candidates: Candidate[]
+  /** Executed movements between own accounts that hold the other account's ticket */
+  pairCandidates: Candidate[]
   targets: Target[]
   partners: AccountRef[]
   accounts: AccountRef[]
@@ -65,6 +69,7 @@ export async function analyzeCsv(csvRows: CsvRow[], accountId: string): Promise<
   const targets: Target[] = []
   const history: { tx: Tx; target: Target }[] = []
   const linked = new Map<string, { tx: Candidate; target: Target | undefined }>()
+  const byTx = new Map<string, { tx: Candidate; target: Target | undefined }>()
   planItems.forEach((item, i) => {
     const plan = details[i].data
     const label = planLabel(item)
@@ -87,6 +92,7 @@ export async function analyzeCsv(csvRows: CsvRow[], accountId: string): Promise<
     for (const tx of txs) {
       const target = planTargets.find((t) => t.budgetId === tx.budgetId)
       if (target) history.push({ tx, target })
+      byTx.set(tx.id, { tx: { ...tx, planId: plan.id, planLabel: label }, target })
       // Every executed or pending transaction that still has no bank ticket, including those of completed plans/budgets
       if (!tx.raw.bankTicketId) {
         candidates.push({ ...tx, planId: plan.id, planLabel: label })
@@ -99,7 +105,8 @@ export async function analyzeCsv(csvRows: CsvRow[], accountId: string): Promise<
   const partners = accountsRes.data.filter((a) => a.type === 'PAYMENT_PARTNER')
   // The bank's document number alone is not unique; the same number can come back on another date
   const ticketKey = (ticketId: string, date: string) => `${ticketId}|${date.slice(0, 10)}`
-  const known = new Map(ticketsRes.data.filter((t) => t.ticketId).map((t) => [ticketKey(t.ticketId!, t.executedOn), t.id]))
+  // A ticket without a transaction (e.g. the transaction was deleted) can be booked again
+  const known = new Map(ticketsRes.data.filter((t) => t.ticketId && (t.transaction || t.pairedTransactionId || t.stateCode === 1)).map((t) => [ticketKey(t.ticketId!, t.executedOn), t]))
   const duplicates = new Set(csvRows.flatMap((r, i) => (r.ticketid && known.has(ticketKey(r.ticketid, r.executedon)) ? [i] : [])))
   // Newest earlier ticket of the same counterparty (account number first, then name) that is booked to a transaction
   const booked = ticketsRes.data.filter((t) => t.transaction)
@@ -121,12 +128,39 @@ export async function analyzeCsv(csvRows: CsvRow[], accountId: string): Promise<
     return { partner: partners.find((p) => p.id === partnerRef?.id), target: targetFromPast(past, targets, row.executedon) }
   }
 
+  // Movements between own accounts hold the ticket of one account only; a row of the other account pairs with them
+  const ownTicketIds = new Set(ticketsRes.data.map((t) => t.id))
+  const pairedTxIds = new Set(ticketsRes.data.flatMap((t) => (t.pairedTransactionId ? [t.pairedTransactionId] : [])))
+  const isOwn = (a: AccountRef | null) => !!a && a.type !== 'PAYMENT_PARTNER'
+  const pairCandidates: Candidate[] = [...byTx.values()]
+    .map((v) => v.tx)
+    .filter((tx) =>
+      !!tx.raw.bankTicketId && !ownTicketIds.has(tx.raw.bankTicketId) && !pairedTxIds.has(tx.id) && !!tx.executedOn &&
+      isOwn(tx.from) && isOwn(tx.to) && (tx.from?.id === accountId || tx.to?.id === accountId))
+    .map((tx) => ({ ...tx, pairOnly: true }))
+  const usedPairs = new Set<string>()
+  const suggestPair = (r: MatchResult): MatchResult => {
+    if (r.isDuplicate) return r
+    const outgoing = r.csvRow.amount < 0
+    const rowTime = new Date(r.csvRow.executedon).getTime()
+    const hit = pairCandidates.find((c) =>
+      !usedPairs.has(c.id) && (outgoing ? c.from?.id === accountId : c.to?.id === accountId) &&
+      Math.abs((c.amount ?? 0) - Math.abs(r.csvRow.amount)) < 0.005 &&
+      Math.abs(c.executedOn!.getTime() - rowTime) <= 3 * 86_400_000)
+    if (!hit) return r
+    // Kept as a fallback for when the user clears a wrong regular match
+    if (r.matched) return { ...r, pairSuggestion: hit }
+    usedPairs.add(hit.id)
+    return { ...r, matched: hit, pairSuggestion: hit, target: byTx.get(hit.id)?.target, confidence: 1 }
+  }
+
   // Already imported rows show the transaction their ticket is linked to instead of a guess
   const results = matchAll(csvRows, candidates, partners, tagsRes.data, history, targets, duplicates, pastBooking).map((r) => {
-    if (!r.isDuplicate) return r
-    const link = linked.get(known.get(ticketKey(r.csvRow.ticketid, r.csvRow.executedon))!)
-    return { ...r, matched: link?.tx, target: link?.target }
+    if (!r.isDuplicate) return suggestPair(r)
+    const ticket = known.get(ticketKey(r.csvRow.ticketid, r.csvRow.executedon))!
+    const link = ticket.pairedTransactionId ? byTx.get(ticket.pairedTransactionId) : linked.get(ticket.id)
+    return { ...r, matched: link?.tx, target: link?.target, ticketDbId: ticket.id, paired: !!ticket.pairedTransactionId || ticket.stateCode === 1 }
   })
 
-  return { results, candidates, targets, partners, accounts: accountsRes.data, tags: tagsRes.data, accountId }
+  return { results, candidates, pairCandidates, targets, partners, accounts: accountsRes.data, tags: tagsRes.data, accountId }
 }

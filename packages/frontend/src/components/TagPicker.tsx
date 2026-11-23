@@ -9,7 +9,7 @@ export type TagOption = { id: string; name: string }
  * Loads all tags while `open` and, for an existing plan/budget, its current tags (or uses `initial` when given).
  * `dirty` tells whether the user changed the selection, so callers can avoid overwriting tags they never loaded.
  */
-export function useTagSelection(open: boolean, object?: { type: 'plan' | 'budget'; id: string }, initial?: string[]) {
+export function useTagSelection(open: boolean, object?: { type: 'plan' | 'budget' | 'account'; id: string }, initial?: string[]) {
   const [allTags, setAllTags] = useState<TagOption[]>([])
   const [tagIds, setTagIds] = useState<string[]>([])
   const [dirty, setDirty] = useState(false)
@@ -87,20 +87,30 @@ export function TagPickerModal({ open, tags, value, onOk, onCancel }: {
   )
 }
 
-/** Selected tags as chips plus a button that opens the picker dialog. */
-export function TagsField({ tags, value, onChange }: {
+/** Selected tags as chips (optionally removable with a small x) plus a button that opens the picker dialog. */
+export function TagsField({ tags, value, onChange, removable }: {
   tags: TagOption[]
   value: string[]
   onChange: (ids: string[]) => void
+  removable?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const selected = tags.filter((t) => value.includes(t.id))
   return (
     <>
       <Space size={[4, 4]} wrap>
-        {selected.map((t) => <Tag key={t.id} style={{ marginInlineEnd: 0 }}>{t.name}</Tag>)}
+        {selected.map((t) => (
+          <Tag
+            key={t.id}
+            style={{ marginInlineEnd: 0 }}
+            closable={removable}
+            onClose={(e) => { e.preventDefault(); onChange(value.filter((id) => id !== t.id)) }}
+          >
+            {t.name}
+          </Tag>
+        ))}
         <Button size="small" icon={<TagsOutlined />} onClick={() => setOpen(true)}>
-          {selected.length > 0 ? 'Edit' : 'Add tags'}
+          Add
         </Button>
       </Space>
       <TagPickerModal
