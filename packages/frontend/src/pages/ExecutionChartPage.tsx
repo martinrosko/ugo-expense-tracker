@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Checkbox, Col, DatePicker, Dropdown, Empty, Radio, Row, Select, Space, Spin, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, Col, DatePicker, Dropdown, Empty, Radio, Row, Select, Space, Spin, Table, Typography } from 'antd'
 import { LeftOutlined, RightOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useNavigate } from 'react-router-dom'
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -17,11 +16,12 @@ import {
 } from 'recharts'
 import apiClient from '../api/apiClient'
 import PlanPerformance from '../components/PlanPerformance'
+import PlanTransactionsDrawer, { type TransactionsScope } from '../components/PlanTransactionsDrawer'
 import { periodSuffix, planLabel } from '../features/planLabel'
 import { computeOffset, getPeriod, toLocalDateStr, type PeriodMode } from '../features/period'
 import { budgetStats, planStats, sumStats, type BudgetStats, type BudgetWithTx, type TxSummary } from '../features/planStats'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 const { RangePicker } = DatePicker
 
 type TemplateOption = { id: string; name: string | null; intervalType: string; isTemplate: boolean; startDate: string | null }
@@ -55,6 +55,50 @@ const fmt = (v: number) =>
   (v < 0 ? '-' : '') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
 
 const round = (v: number) => Math.round(v * 100) / 100
+
+const AVERAGE_SIDES = [
+  { key: 'income', label: 'Income', sign: 1, planned: (s: BudgetStats) => s.incPlanned, projected: (s: BudgetStats) => s.incActual + s.incReserved },
+  { key: 'expenses', label: 'Expenses', sign: -1, planned: (s: BudgetStats) => s.expPlanned, projected: (s: BudgetStats) => s.expActual + s.expReserved },
+  { key: 'net', label: 'Net', sign: 1, planned: (s: BudgetStats) => s.incPlanned - s.expPlanned, projected: (s: BudgetStats) => s.incActual + s.incReserved - s.expActual - s.expReserved },
+]
+
+const mean = (v: number[]) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0)
+const deltaColor = (v: number) => (v > 0 ? '#389e0d' : v < 0 ? '#cf1322' : undefined)
+
+/** Average execution per plan or budget instance: planned vs projected (actual + reserved), as amount and as percent of planned. */
+function ExecutionAverages({ stats, unit }: { stats: BudgetStats[]; unit: string }) {
+  const cols = AVERAGE_SIDES.map((side) => {
+    const per = stats.map((s) => ({ planned: side.planned(s), projected: side.projected(s) }))
+    // Positive means better than planned: more income, or less spent
+    const delta = (p: { planned: number; projected: number }) => side.sign * (p.projected - p.planned)
+    // A period with nothing planned has no percentage
+    const pcts = per.filter((p) => p.planned !== 0).map((p) => (delta(p) / Math.abs(p.planned)) * 100)
+    return { ...side, avgPlanned: mean(per.map((p) => p.planned)), avgProjected: mean(per.map((p) => p.projected)), avgDelta: mean(per.map(delta)), avgPct: mean(pcts), hasPct: pcts.length > 0 }
+  })
+  const signed = (v: number) => (v > 0 ? '+' : '') + fmt(v)
+  const lines = [
+    { key: 'planned', label: 'Planned', cell: (c: (typeof cols)[number]) => fmt(c.avgPlanned) },
+    { key: 'projected', label: 'Projected', cell: (c: (typeof cols)[number]) => fmt(c.avgProjected) },
+    { key: 'delta', label: 'Delta', cell: (c: (typeof cols)[number]) => <Text strong style={{ color: deltaColor(c.avgDelta) }}>{signed(c.avgDelta)}</Text> },
+    { key: 'pct', label: 'Delta %', cell: (c: (typeof cols)[number]) => c.hasPct ? <Text strong style={{ color: deltaColor(c.avgPct) }}>{`${c.avgPct > 0 ? '+' : ''}${c.avgPct.toFixed(1)} %`}</Text> : '\u2014' },
+  ]
+  return (
+    <div>
+      <Text strong>{`Average per ${unit} \u00b7 ${stats.length} in the period`}</Text>
+      <Table
+        size="small"
+        pagination={false}
+        rowKey="key"
+        dataSource={lines}
+        columns={[
+          { title: '', dataIndex: 'label' },
+          ...cols.map((c) => ({ title: c.label, key: c.key, align: 'right' as const, render: (_: unknown, line: (typeof lines)[number]) => line.cell(c) })),
+        ]}
+      />
+      <Text type="secondary" style={{ fontSize: 11 }}>Projected = actual + still reserved. Delta is positive when better than planned (more income, less spent).</Text>
+    </div>
+  )
+}
 
 // Budgets of different plan instances are the same budget when they share a template; unlinked ones are matched by name
 const budgetKeyOf = (b: { templateId?: string | null; name: string | null }) => b.templateId ?? `name:${b.name ?? ''}`
@@ -106,10 +150,11 @@ function ExecChart({ title, data, visible, onPick }: { title: string; data: Poin
 }
 
 export default function ExecutionChartPage() {
-  const navigate = useNavigate()
   // Where the user clicked a bar, to anchor the menu there
   const [menu, setMenu] = useState<{ point: Point; x: number; y: number } | null>(null)
   const [selectedPlanId, setSelectedPlanId] = useState<string>()
+  const [txScope, setTxScope] = useState<TransactionsScope | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const [templates, setTemplates] = useState<TemplateOption[]>([])
   const [templateId, setTemplateId] = useState<string>()
   const [budgetKey, setBudgetKey] = useState<string>()
@@ -158,7 +203,7 @@ export default function ExecutionChartPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [templateId, mode, period, customRange])
+  }, [templateId, mode, period, customRange, reloadKey])
 
   const budgetOptions = useMemo(() => {
     const names = new Map<string, string>()
@@ -192,7 +237,12 @@ export default function ExecutionChartPage() {
   function handleModeChange(m: PeriodMode) { setMode(m); setOffset(0) }
 
   function showTransactions(p: Point) {
-    navigate(p.budgetId ? `/transactions?budgetId=${p.budgetId}` : `/transactions?planId=${p.planId}`)
+    setTxScope({
+      title: p.label,
+      planId: p.budgetId ? undefined : p.planId,
+      budgetId: p.budgetId,
+      qs: p.budgetId ? `budgetId=${p.budgetId}` : `planId=${p.planId}`,
+    })
   }
 
   const onPick = (p: Point, x: number, y: number) => {
@@ -301,9 +351,18 @@ export default function ExecutionChartPage() {
       ))}
 
       {!loading && !error && rows.length > 0 && (
-        <Card size="small" style={{ maxWidth: 640 }}>
-          <PlanPerformance title={`Total · ${rows.length} ${budgetKey ? 'budget' : 'plan'}${rows.length === 1 ? '' : 's'}`} stats={totals} />
-        </Card>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} xl={10}>
+            <Card size="small" style={{ height: '100%' }}>
+              <PlanPerformance title={`Total \u00b7 ${rows.length} ${budgetKey ? 'budget' : 'plan'}${rows.length === 1 ? '' : 's'}`} stats={totals} />
+            </Card>
+          </Col>
+          <Col xs={24} xl={14}>
+            <Card size="small" style={{ height: '100%' }}>
+              <ExecutionAverages stats={rows.map((r) => r.stats)} unit={budgetKey ? 'budget' : 'plan'} />
+            </Card>
+          </Col>
+        </Row>
       )}
 
       {selectedRow && (
@@ -311,6 +370,8 @@ export default function ExecutionChartPage() {
           <PlanPerformance title={selectedRow.label} stats={selectedRow.stats} />
         </Card>
       )}
+
+      <PlanTransactionsDrawer scope={txScope} onClose={() => setTxScope(null)} onChanged={() => setReloadKey((k) => k + 1)} />
 
       <Dropdown
         open={menu !== null}

@@ -5,7 +5,6 @@ import {
   Button,
   Radio,
   Table,
-  Tag,
   Spin,
   Alert,
   Row,
@@ -17,7 +16,7 @@ import {
   Segmented,
   Checkbox,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, LineChartOutlined, LinkOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, LineChartOutlined } from '@ant-design/icons'
 import {
   ResponsiveContainer,
   LineChart,
@@ -34,12 +33,12 @@ import isoWeek from 'dayjs/plugin/isoWeek'
 import { useSearchParams } from 'react-router-dom'
 import apiClient from '../api/apiClient'
 import { planLabel } from '../features/planLabel'
-import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
-import RowActions from '../components/RowActions'
+import { usePlanTxActions, type TxActionContext } from '../features/usePlanTxActions'
+import ExecutedTransactionsTable, { type ExecutedTxRow } from '../components/ExecutedTransactionsTable'
 
 dayjs.extend(isoWeek)
 
-const { Title, Text } = Typography
+const { Title } = Typography
 const { RangePicker } = DatePicker
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -145,13 +144,6 @@ function txKind(tx: Transaction): 'expense' | 'income' | 'transfer' {
   return 'expense'
 }
 
-function txAmountColor(tx: Transaction) {
-  const kind = txKind(tx)
-  if (kind === 'expense') return '#cf1322'
-  if (kind === 'income') return '#3f8600'
-  return undefined
-}
-
 // ─── Chart helpers ────────────────────────────────────────────────────────────
 
 type ChartGroup = 'none' | 'day' | 'week' | 'month'
@@ -255,8 +247,6 @@ export default function TransactionsPage() {
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   // Kept here because the table unmounts while reloading
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
   const { actionsFor, modals } = usePlanTxActions(() => setReloadKey((k) => k + 1))
 
   // View mode: list or chart
@@ -426,7 +416,6 @@ export default function TransactionsPage() {
   }, [mode, period, customFrom, customTo, apiPlanId, apiBudgetId, filterAccountId, reloadKey])
 
   // Client-side amount filter
-  useEffect(() => { setPage(1) }, [mode, period, customFrom, customTo, apiPlanId, apiBudgetId, filterAccountId, minAmount, maxAmount])
   const filteredTxs = useMemo(() => {
     if (minAmount === null && maxAmount === null) return transactions
     return transactions.filter((tx) => {
@@ -445,86 +434,21 @@ export default function TransactionsPage() {
     return { id: tx.id, planId: plan.id, planStatus, budgetCompleted: tx.budget?.statusCode === 3, templateId: tx.templateId ?? null, executed: true }
   }
 
-  const columns = useMemo(() => [
-    {
-      title: 'Date',
-      dataIndex: 'executedOn',
-      key: 'executedOn',
-      width: 110,
-      render: (v: string | null) => v ? new Date(v).toLocaleDateString('sk-SK') : '—',
-    },
-    {
-      title: 'Name',
-      key: 'name',
-      ellipsis: true,
-      render: (_: unknown, row: Transaction) => (
-        <Space size={4}>
-          {row.name ?? <Text type="secondary">(unnamed)</Text>}
-          {row.templateId && <Tag style={{ fontSize: 11 }}>template</Tag>}
-          {row.bankTicketId && <LinkOutlined style={{ color: '#1677ff' }} title="Linked to a bank ticket" />}
-        </Space>
-      ),
-    },
-    {
-      title: 'From',
-      key: 'from',
-      ellipsis: true,
-      width: 140,
-      render: (_: unknown, row: Transaction) =>
-        row.fromAccount ? <Text>{row.fromAccount.name}</Text> : <Text type="secondary">—</Text>,
-    },
-    {
-      title: 'To',
-      key: 'to',
-      ellipsis: true,
-      width: 140,
-      render: (_: unknown, row: Transaction) =>
-        row.toAccount ? <Text>{row.toAccount.name}</Text> : <Text type="secondary">—</Text>,
-    },
-    ...(!apiBudgetId ? [{
-      title: apiPlanId ? 'Budget' : 'Plan / Budget',
-      key: 'scope',
-      ellipsis: true,
-      width: 180,
-      render: (_: unknown, row: Transaction) => (
-        <Space size={4}>
-          {!apiPlanId && row.plan?.name && <Tag style={{ margin: 0 }}>{row.plan.name}</Tag>}
-          {row.budget?.name && <Tag color="blue" style={{ margin: 0 }}>{row.budget.name}</Tag>}
-        </Space>
-      ),
-    }] : []),
-    {
-      title: 'Amount',
-      key: 'amount',
-      width: 120,
-      align: 'right' as const,
-      render: (_: unknown, row: Transaction) => (
-        <span style={{ color: txAmountColor(row), fontWeight: 600 }}>{fmt(row.amount)}</span>
-      ),
-    },
-    {
-      title: 'Tags',
-      key: 'tags',
-      width: 160,
-      render: (_: unknown, row: Transaction) => (
-        <Space size={2} wrap>
-          {(row.tags ?? []).map((t) => (
-            <Tag key={t.tag.id} color={t.tag.color ?? undefined} style={{ margin: 0 }}>{t.tag.name}</Tag>
-          ))}
-        </Space>
-      ),
-    },
-    {
-      title: '',
-      key: 'actions',
-      width: 60,
-      align: 'right' as const,
-      render: (_: unknown, row: Transaction) => {
-        const ctx = txContext(row)
-        return ctx ? <RowActions actions={actionsFor(ctx)} /> : null
-      },
-    },
-  ], [apiPlanId, apiBudgetId, actionsFor]) // eslint-disable-line react-hooks/exhaustive-deps
+  const txById = useMemo(() => new Map(filteredTxs.map((t) => [t.id, t])), [filteredTxs])
+  const rows = useMemo<ExecutedTxRow[]>(() => filteredTxs.map((tx) => ({
+    id: tx.id,
+    executedOn: tx.executedOn,
+    name: tx.name,
+    hasTemplate: !!tx.templateId,
+    hasBankTicket: !!tx.bankTicketId,
+    from: tx.fromAccount?.name,
+    to: tx.toAccount?.name,
+    plan: tx.plan?.name,
+    budget: tx.budget?.name,
+    amount: tx.amount ? parseFloat(tx.amount) : null,
+    kind: txKind(tx),
+    tags: (tx.tags ?? []).map((t) => t.tag),
+  })), [filteredTxs])
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -710,37 +634,31 @@ export default function TransactionsPage() {
 
       {!loading && !error && viewMode === 'list' && (
         <>
-          <Table
-            dataSource={filteredTxs}
-            columns={columns}
-            rowKey="id"
-            size="small"
-            pagination={{
-              current: page,
-              pageSize,
-              showSizeChanger: true,
-              pageSizeOptions: [20, 50, 100, 200],
-              onChange: (p, s) => { setPage(p); setPageSize(s) },
+          <ExecutedTransactionsTable
+            rows={rows}
+            scope={apiBudgetId ? undefined : apiPlanId ? 'budget' : 'planAndBudget'}
+            showTags
+            defaultPageSize={50}
+            pageSizeOptions={[20, 50, 100, 200]}
+            resetKey={[mode, period, customFrom, customTo, apiPlanId, apiBudgetId, filterAccountId, minAmount, maxAmount].join('|')}
+            emptyText="No executed transactions found."
+            actionsFor={(row) => {
+              const ctx = txContext(txById.get(row.id)!)
+              return ctx ? actionsFor(ctx) : []
             }}
-            locale={{ emptyText: 'No executed transactions found.' }}
-            onRow={(row) => {
-              const ctx = txContext(row)
-              return ctx ? { onClick: () => void rowClickAction(actionsFor(ctx), true)?.onClick(), style: { cursor: 'pointer' } } : {}
-            }}
-            summary={(rows) => {
+            summary={(data, span) => {
               let income = 0
               let expense = 0
-              rows.forEach((r) => {
-                const kind = txKind(r)
-                const v = r.amount ? parseFloat(r.amount) : 0
-                if (kind === 'income') income += Math.abs(v)
-                else if (kind === 'expense') expense += Math.abs(v)
+              data.forEach((r) => {
+                const v = Math.abs(r.amount ?? 0)
+                if (r.kind === 'income') income += v
+                else if (r.kind === 'expense') expense += v
               })
               const balance = income - expense
               return (
                 <>
                   <Table.Summary.Row>
-                    <Table.Summary.Cell index={0} colSpan={columns.length - 3}>
+                    <Table.Summary.Cell index={0} colSpan={span.label}>
                       <span style={{ color: '#3f8600' }}>Income</span>
                       {' / '}
                       <span style={{ color: '#cf1322' }}>Expense</span>
@@ -750,14 +668,14 @@ export default function TransactionsPage() {
                       {' / '}
                       <span style={{ color: '#cf1322' }}>{fmt(-expense)}</span>
                     </Table.Summary.Cell>
-                    <Table.Summary.Cell index={2} colSpan={2} />
+                    <Table.Summary.Cell index={2} colSpan={span.trailing} />
                   </Table.Summary.Row>
                   <Table.Summary.Row style={{ fontWeight: 600 }}>
-                    <Table.Summary.Cell index={0} colSpan={columns.length - 3}>Balance</Table.Summary.Cell>
+                    <Table.Summary.Cell index={0} colSpan={span.label}>Balance</Table.Summary.Cell>
                     <Table.Summary.Cell index={1} align="right">
                       <span style={{ color: balance < 0 ? '#cf1322' : balance > 0 ? '#3f8600' : undefined, fontWeight: 600 }}>{fmt(balance > 0 ? balance : -Math.abs(balance))}</span>
                     </Table.Summary.Cell>
-                    <Table.Summary.Cell index={2} colSpan={2} />
+                    <Table.Summary.Cell index={2} colSpan={span.trailing} />
                   </Table.Summary.Row>
                 </>
               )

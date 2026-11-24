@@ -37,6 +37,7 @@ import RowActions, { type RowAction } from '../components/RowActions'
 import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
 import LogTransactionModal from '../components/LogTransactionModal'
 import PlanPerformance from '../components/PlanPerformance'
+import PlanTransactionsDrawer, { type TransactionsScope } from '../components/PlanTransactionsDrawer'
 import { TagsField, useTagSelection } from '../components/TagPicker'
 
 dayjs.extend(isoWeek)
@@ -264,7 +265,7 @@ function txSplit(tx: TxSummary, raw: string | null): { inc: number; exp: number 
   return { inc: kind === 'income' ? v : 0, exp: kind === 'expense' ? v : 0 }
 }
 
-function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, planEndDate, planId, planName, planStatusCode, splitView, txActions, onLogTransaction }: { budgets: BudgetWithTx[]; directTxs?: TxSummary[]; scheduled?: boolean; from?: Date; to?: Date; planStartDate?: string | null; planEndDate?: string | null; planId?: string; planName?: string | null; planStatusCode?: number; splitView?: boolean; txActions?: (ctx: TxActionContext) => RowAction[]; onLogTransaction?: (planId: string, budgetId: string | null) => void }) {
+function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, planEndDate, planId, planName, planStatusCode, splitView, txActions, onLogTransaction, onShowTransactions }: { budgets: BudgetWithTx[]; directTxs?: TxSummary[]; scheduled?: boolean; from?: Date; to?: Date; planStartDate?: string | null; planEndDate?: string | null; planId?: string; planName?: string | null; planStatusCode?: number; splitView?: boolean; txActions?: (ctx: TxActionContext) => RowAction[]; onLogTransaction?: (planId: string, budgetId: string | null) => void; onShowTransactions?: (scope: TransactionsScope) => void }) {
   const navigate = useNavigate()
   const rows: BudgetRow[] = (budgets ?? []).map((b) => {
     const s = budgetStats(b, from, to, planStartDate, planEndDate, planStatusCode === 3)
@@ -301,7 +302,9 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
       ...(onLogTransaction && (planStatusCode === 1 || planStatusCode === 3)
         ? [{ key: 'log', label: 'Log transaction', icon: <PlusOutlined />, onClick: () => onLogTransaction(planId, isDirect ? null : row.key) }]
         : []),
-      { key: 'transactions', label: 'View transactions', icon: <UnorderedListOutlined />, onClick: () => navigate(`/transactions?${qs}`) },
+      { key: 'transactions', label: 'View transactions', icon: <UnorderedListOutlined />, onClick: () => (onShowTransactions
+        ? onShowTransactions({ title: `${planName ?? 'Plan'} \u203a ${isDirect ? 'General' : row.name}`, planId: isDirect ? planId : undefined, budgetId: isDirect ? undefined : row.key, qs: qs.toString() })
+        : navigate(`/transactions?${qs}`)) },
     ]
   }
   const sumOf = (pick: (r: BudgetRow) => Amt): Amt => rows.reduce((s, r) => { const a = pick(r); return { total: s.total + a.total, inc: s.inc + a.inc, exp: s.exp + a.exp } }, ZERO)
@@ -488,7 +491,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     </div>
   )
 }
-function PlanHeader({ plan, stats, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences, onLogTransaction }: { plan: PlanDetailed; stats: BudgetStats; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void; onLogTransaction?: (plan: PlanDetailed) => void }) {
+function PlanHeader({ plan, stats, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences, onLogTransaction, onShowTransactions }: { plan: PlanDetailed; stats: BudgetStats; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void; onLogTransaction?: (plan: PlanDetailed) => void; onShowTransactions?: (scope: TransactionsScope) => void }) {
   const navigate = useNavigate()
   const dateRange = [plan.startDate, plan.endDate]
     .map((d) => (d ? new Date(d).toLocaleDateString('sk-SK') : ''))
@@ -528,7 +531,8 @@ function PlanHeader({ plan, stats, onDiscard, onChangeRecurrence, onActivate, on
       key: 'transactions', label: 'View transactions', icon: <UnorderedListOutlined />,
       onClick: () => {
         const qs = new URLSearchParams({ planId: plan.id, ...(plan.name ? { planName: planLabel(plan) } : {}) })
-        navigate(`/transactions?${qs}`)
+        if (onShowTransactions) onShowTransactions({ title: planLabel(plan), planId: plan.id, qs: qs.toString() })
+        else navigate(`/transactions?${qs}`)
       },
     },
   ]
@@ -587,6 +591,7 @@ export default function PlansOverviewPage() {
   const [recurrencePlanId, setRecurrencePlanId] = useState<string | null>(null)
   const [activatePlan, setActivatePlan] = useState<PlanDetailed | null>(null)
   const [logTarget, setLogTarget] = useState<{ planId?: string; budgetId?: string | null } | null>(null)
+  const [txScope, setTxScope] = useState<TransactionsScope | null>(null)
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
 
   const [templateId, setTemplateId] = useState<string | null>(returnState.templateId ?? null)
@@ -794,8 +799,8 @@ export default function PlansOverviewPage() {
     const stats = planStats(plan, from, to)
     return {
       key: plan.id,
-      label: <PlanHeader plan={plan} stats={stats} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} onLogTransaction={(p) => setLogTarget({ planId: p.id })} />,
-      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} onLogTransaction={(planId, budgetId) => setLogTarget({ planId, budgetId })} />,
+      label: <PlanHeader plan={plan} stats={stats} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} onLogTransaction={(p) => setLogTarget({ planId: p.id })} onShowTransactions={setTxScope} />,
+      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} onLogTransaction={(planId, budgetId) => setLogTarget({ planId, budgetId })} onShowTransactions={setTxScope} />,
     }
   }), [period, splitView, discardPlan, txActions])
 
@@ -817,6 +822,7 @@ export default function PlansOverviewPage() {
     <Space orientation="vertical" style={{ width: '100%' }} size="large">
       {contextHolder}
       {txModals}
+      <PlanTransactionsDrawer scope={txScope} onClose={() => setTxScope(null)} onChanged={() => setReloadKey((k) => k + 1)} />
       <ChangeRecurrenceModal
         planId={recurrencePlanId}
         onClose={() => setRecurrencePlanId(null)}

@@ -5,6 +5,7 @@ import { ArrowLeftOutlined, EditOutlined, ExclamationCircleOutlined, LinkOutline
 import apiClient from '../api/apiClient'
 import LogTransactionModal from '../components/LogTransactionModal'
 import RowActions from '../components/RowActions'
+import ExecutedTransactionsTable, { type ExecutedTxRow } from '../components/ExecutedTransactionsTable'
 import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
 import {
   apiError, byExecutedNewestFirst, byPlannedDate, direction, isOverdue, num, resolveAll,
@@ -50,7 +51,6 @@ export default function PlanDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [logOpen, setLogOpen] = useState(false)
-  const [pageSize, setPageSize] = useState(20)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -101,6 +101,15 @@ export default function PlanDetailPage() {
   }, [plan, accountMap])
 
   const { actionsFor, modals } = usePlanTxActions(load)
+
+  const executedRows = useMemo<ExecutedTxRow[]>(() => executed.map((t) => {
+    const dir = direction(t.from, t.to)
+    return {
+      id: t.id, executedOn: t.executedOn, name: t.name, hasTemplate: !!t.templateId, hasBankTicket: !!t.raw.bankTicketId,
+      from: t.from?.name, to: t.to?.name, budget: t.budgetName, amount: t.amount,
+      kind: dir > 0 ? 'income' : dir < 0 ? 'expense' : 'transfer',
+    }
+  }), [executed])
 
   if (loading) return <div style={{ textAlign: 'center', padding: 64 }}><Spin size="large" /></div>
   if (error || !plan) return <Alert type="error" title={error ?? 'Plan not found'} showIcon />
@@ -189,25 +198,11 @@ export default function PlanDetailPage() {
         />
       </div>
       <div>
-        <Title level={5}>Executed transactions</Title>
-        <Table<Tx>
-          size="small" rowKey="id" pagination={{ pageSize, showSizeChanger: true, onChange: (_page, size) => setPageSize(size), hideOnSinglePage: true }} dataSource={executed}
-          locale={{ emptyText: 'No executed transactions' }}
-          onRow={(t) => ({ onClick: () => void rowClickAction(actionsFor(txContext(t)), true)?.onClick(), style: { cursor: 'pointer' } })}
-          columns={[
-            { title: 'Executed', key: 'date', width: 110, render: (_: unknown, t) => fmtDate(t.executedOn) },
-            { title: 'Name', key: 'name', render: (_: unknown, t) => nameCell(t) },
-            { title: 'Budget', dataIndex: 'budgetName', width: 150 },
-            { title: 'Accounts', key: 'accounts', width: 220, render: (_: unknown, t) => accountsCell(t) },
-            {
-              title: 'Amount', key: 'amount', align: 'right', width: 120,
-              render: (_: unknown, t) => <span style={{ color: amountColor((t.amount ?? 0) * direction(t.from, t.to)) }}>{fmt(t.amount)}</span>,
-            },
-            {
-              title: '', key: 'actions', width: 60, align: 'right',
-              render: (_: unknown, t) => <RowActions actions={actionsFor(txContext(t))} />,
-            },
-          ]}
+        <ExecutedTransactionsTable
+          title={<Title level={5} style={{ margin: 0 }}>Executed transactions</Title>}
+          rows={executedRows}
+          scope="budget"
+          actionsFor={(row) => actionsFor(txContext(executed.find((t) => t.id === row.id)!))}
         />
       </div>
 
