@@ -48,6 +48,45 @@ export type Analysis = {
   accountId: string
 }
 
+/** Targets of a plan: its general part and each budget. */
+function targetsOf(item: PlanItem, plan: RawPlan): Target[] {
+  const label = planLabel(item)
+  const completed = item.statusCode === 3
+  return [
+    {
+      key: targetKey(plan.id, null), planId: plan.id, budgetId: null, budgetName: null, budgetTemplateId: null, planTemplateId: plan.templateId,
+      label: `${label} \u203a General`, completed, startDate: item.startDate, endDate: item.endDate,
+    },
+    ...plan.budgets.map((b) => {
+      const budgetName = b.name ?? b.template?.name ?? '(unnamed)'
+      return {
+        key: targetKey(plan.id, b.id), planId: plan.id, budgetId: b.id, budgetName, budgetTemplateId: b.templateId ?? null, planTemplateId: plan.templateId,
+        label: `${label} \u203a ${budgetName}`, completed, startDate: item.startDate, endDate: item.endDate,
+      }
+    }),
+  ]
+}
+
+/** The completed plans outside the period of the CSV: their targets and the transactions that still lack a bank ticket. */
+export async function loadOtherPlans(knownTargets: Target[], accounts: AccountRef[]): Promise<{ targets: Target[]; candidates: Candidate[] }> {
+  const known = new Set(knownTargets.map((t) => t.planId))
+  const all = await apiClient.get<PlanItem[]>('/api/plans', { params: { status: '3', isTemplate: 'false' } })
+  const items = all.data.filter((p) => !known.has(p.id)).sort((a, b) => (b.startDate ?? '').localeCompare(a.startDate ?? ''))
+  const details = await Promise.all(items.map((p) => apiClient.get<RawPlan>(`/api/plans/${p.id}`)))
+  const accountMap = new Map(accounts.map((a) => [a.id, a]))
+  const targets: Target[] = []
+  const candidates: Candidate[] = []
+  items.forEach((item, i) => {
+    const plan = details[i].data
+    const label = planLabel(item)
+    targets.push(...targetsOf(item, plan))
+    for (const tx of resolveAll(plan, accountMap)) {
+      if (!tx.raw.bankTicketId) candidates.push({ ...tx, planId: plan.id, planLabel: label })
+    }
+  })
+  return { targets, candidates }
+}
+
 /** Loads the plans and matches the CSV rows against them; rows already imported for the bank account are flagged as duplicates. */
 export async function analyzeCsv(csvRows: CsvRow[], accountId: string): Promise<Analysis> {
   // Completed plans are limited to the period covered by the CSV
@@ -73,20 +112,7 @@ export async function analyzeCsv(csvRows: CsvRow[], accountId: string): Promise<
   planItems.forEach((item, i) => {
     const plan = details[i].data
     const label = planLabel(item)
-    const completedPlan = item.statusCode === 3
-    const planTargets: Target[] = [
-      {
-        key: targetKey(plan.id, null), planId: plan.id, budgetId: null, budgetName: null, budgetTemplateId: null, planTemplateId: plan.templateId,
-        label: `${label} › General`, completed: completedPlan, startDate: item.startDate, endDate: item.endDate,
-      },
-      ...plan.budgets.map((b) => {
-        const budgetName = b.name ?? b.template?.name ?? '(unnamed)'
-        return {
-          key: targetKey(plan.id, b.id), planId: plan.id, budgetId: b.id, budgetName, budgetTemplateId: b.templateId ?? null, planTemplateId: plan.templateId,
-          label: `${label} › ${budgetName}`, completed: completedPlan, startDate: item.startDate, endDate: item.endDate,
-        }
-      }),
-    ]
+    const planTargets = targetsOf(item, plan)
     targets.push(...planTargets)
     const txs = resolveAll(plan, accountMap)
     for (const tx of txs) {

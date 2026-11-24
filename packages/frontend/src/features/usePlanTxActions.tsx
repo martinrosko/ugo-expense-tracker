@@ -5,6 +5,7 @@ import apiClient from '../api/apiClient'
 import TransactionModal, { type TxModalBody, type TxModalTx } from '../components/TransactionModal'
 import type { RowAction } from '../components/RowActions'
 import { apiError, num, resolveAll, type Account, type RawPlan, type Tx } from './planTransactions'
+import { planLabel } from './planLabel'
 
 /** What the action rules need to know about a transaction row */
 export type TxActionContext = {
@@ -16,9 +17,19 @@ export type TxActionContext = {
   executed: boolean
 }
 
-type Target = { kind: 'execute' | 'edit' | 'editExecuted'; plan: RawPlan; tx: Tx; accounts: Account[] }
+type BudgetOption = { value: string | null; label: string }
 
-function modalTx(t: Tx, amount: number | null): TxModalTx {
+/** Plan and budget choices for an unplanned executed transaction */
+type Move = { plans: { value: string; label: string }[]; planId: string; budgets: BudgetOption[] }
+
+type Target = { kind: 'execute' | 'edit' | 'editExecuted'; plan: RawPlan; tx: Tx; accounts: Account[]; move?: Move }
+
+const budgetOptions = (plan: RawPlan): BudgetOption[] => [
+  { value: null, label: 'General (no budget)' },
+  ...plan.budgets.map((b) => ({ value: b.id, label: b.name ?? b.template?.name ?? '(unnamed)' })),
+]
+
+function modalTx(t: Tx, amount: number | null, defaultExecutedOn?: string | null): TxModalTx {
   return {
     id: t.id,
     templateId: t.templateId,
@@ -30,6 +41,8 @@ function modalTx(t: Tx, amount: number | null): TxModalTx {
     toAccount: t.to,
     dueDateConfig: t.dueDateConfig,
     executedOn: t.raw.executedOn,
+    defaultExecutedOn,
+    budgetId: t.budgetId,
   }
 }
 
@@ -73,7 +86,18 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
       ])
       const tx = resolveAll(planRes.data, new Map(accountsRes.data.map((a) => [a.id, a]))).find((t) => t.id === ctx.id)
       if (!tx) throw new Error('Transaction not found')
-      setTarget({ kind, plan: planRes.data, tx, accounts: accountsRes.data })
+      let move: Move | undefined
+      if (kind === 'editExecuted' && !tx.templateId) {
+        const [active, completed] = await Promise.all([
+          apiClient.get<RawPlan[]>('/api/plans', { params: { status: '1', isTemplate: 'false' } }),
+          apiClient.get<RawPlan[]>('/api/plans', { params: { status: '3', isTemplate: 'false' } }),
+        ])
+        const plans = [...active.data, ...completed.data]
+          .sort((a, b) => (b.startDate ?? '').localeCompare(a.startDate ?? ''))
+          .map((p) => ({ value: p.id, label: `${planLabel(p)}${p.startDate ? ` (${new Date(p.startDate).toLocaleDateString('sk-SK')})` : ''}` }))
+        move = { plans, planId: planRes.data.id, budgets: budgetOptions(planRes.data) }
+      }
+      setTarget({ kind, plan: planRes.data, tx, accounts: accountsRes.data, move })
     } catch (err) {
       messageApi.error(apiError(err, 'Failed to load transaction'))
     } finally {
@@ -86,7 +110,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
     const completed = ctx.planStatus === 3
     // Template transactions of active plans are discarded; anything in completed plans or budgets can be deleted
     const canDelete = completed || ctx.budgetCompleted || !ctx.templateId
-    const canDiscard = active && !ctx.budgetCompleted && ctx.templateId !== null && ctx.executed
+    const canDiscard = (active || completed) && ctx.templateId !== null && ctx.executed
     const del: RowAction = {
       key: 'delete', label: 'Delete', icon: <DeleteOutlined />, danger: true, disabled: busy,
       confirm: { title: 'Delete this transaction?', okText: 'Delete' },
@@ -109,7 +133,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
           onClick: () => perform(() => apiClient.post(`/api/transactions/${ctx.id}/unexecute`), 'Execution discarded'),
         }]
         : []),
-      ...(!canDiscard && canDelete ? [del] : []),
+      ...(canDelete ? [del] : []),
     ]
   }
 
@@ -146,7 +170,8 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
   }
 
   async function submitEditExecuted(body: TxModalBody) {
-    const { tx } = target!
+    const { tx, plan, move } = target!
+    const relocated = move && (move.planId !== plan.id || body.budgetId !== tx.budgetId)
     const ok = await perform(
       () => apiClient.patch(`/api/transactions/${tx.id}`, {
         amount: body.plannedAmount,
@@ -155,10 +180,20 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
         fromAccountId: changed(body.fromAccountId, tx.from?.id ?? null),
         toAccountId: changed(body.toAccountId, tx.to?.id ?? null),
         tagIds: body.tagIds,
+        ...(relocated ? { planId: move.planId, budgetId: body.budgetId ?? null } : {}),
       }),
       'Transaction updated',
     )
     if (ok) setTarget(null)
+  }
+
+  async function changeMovePlan(planId: string) {
+    try {
+      const res = await apiClient.get<RawPlan>(`/api/plans/${planId}`)
+      setTarget((t) => (t?.move ? { ...t, move: { ...t.move, planId, budgets: budgetOptions(res.data) } } : t))
+    } catch (err) {
+      messageApi.error(apiError(err, 'Failed to load plan'))
+    }
   }
 
   const close = () => setTarget(null)
@@ -172,7 +207,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
     <>
       <TransactionModal
         mode="execute" open={executeTarget !== null} editTags
-        tx={executeTarget ? modalTx(executeTarget.tx, executeTarget.tx.plannedAmount) : null}
+        tx={executeTarget ? modalTx(executeTarget.tx, executeTarget.tx.plannedAmount, executeTarget.plan.statusCode === 3 ? executeTarget.tx.plannedDate?.toISOString() : null) : null}
         accounts={executeTarget?.accounts ?? []} planIntervalType={executeTarget?.plan.intervalType ?? 'ONE_TIME'}
         onOk={submitExecute} onCancel={close} onPartnerCreated={addPartner}
       />
@@ -187,6 +222,8 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
         accounts={executedTarget?.accounts ?? []} planIntervalType={executedTarget?.plan.intervalType ?? 'ONE_TIME'}
         title="Edit Executed Transaction" okText="Save" onOk={submitEditExecuted} onCancel={close} onPartnerCreated={addPartner}
         bankTicketControls onBankTicketUnlinked={() => void onChanged()}
+        plans={executedTarget?.move?.plans} planId={executedTarget?.move?.planId} onPlanChange={changeMovePlan}
+        budgets={executedTarget?.move?.budgets}
       />
     </>
   )

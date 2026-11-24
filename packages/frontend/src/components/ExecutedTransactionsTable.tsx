@@ -14,6 +14,8 @@ export type ExecutedTxRow = {
   /** Instance of a template transaction */
   hasTemplate?: boolean
   hasBankTicket?: boolean
+  /** Execution date of the linked bank ticket; shown under the date when it is another day */
+  ticketOn?: string | null
   from?: string | null
   to?: string | null
   plan?: string | null
@@ -54,6 +56,7 @@ const fmtMoney = (v: number | null) =>
   v === null ? '\u2014' : (v < 0 ? '-' : '') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' \u20ac'
 
 const fmtDate = (d: string | Date | null) => (d ? new Date(d).toLocaleDateString('sk-SK') : '\u2014')
+const dayDiffers = (r: ExecutedTxRow) => !!r.ticketOn && !!r.executedOn && fmtDate(r.executedOn) !== fmtDate(r.ticketOn)
 
 const text = (a?: string | null, b?: string | null) => (a ?? '').localeCompare(b ?? '')
 const time = (d: string | Date | null) => new Date(d ?? 0).getTime()
@@ -105,7 +108,19 @@ export default function ExecutedTransactionsTable({
   const sortOf = (key: SortKey) => (sort?.key === key ? sort.order : null)
 
   const columns: ColumnsType<ExecutedTxRow> = [
-    { title: 'Date', key: 'date', width: 90, sorter: true, sortOrder: sortOf('date'), render: (_, r) => fmtDate(r.executedOn) },
+    {
+      title: 'Date',
+      key: 'date',
+      width: rows.some((r) => dayDiffers(r)) ? 120 : 90,
+      sorter: true,
+      sortOrder: sortOf('date'),
+      render: (_, r) => (
+        <div>
+          {fmtDate(r.executedOn)}
+          {dayDiffers(r) && <div style={{ fontSize: 11, lineHeight: 1.3, color: '#cf1322' }}>{`ticket ${fmtDate(r.ticketOn!)}`}</div>}
+        </div>
+      ),
+    },
     {
       title: 'Name',
       key: 'name',

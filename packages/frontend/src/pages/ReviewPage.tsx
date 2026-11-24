@@ -1,23 +1,27 @@
-import { useEffect, useRef, useState } from 'react'
-import { Table, Button, Tabs, Alert, DatePicker, Divider, Select, Tag, Typography, Space, App as AntApp, Tooltip, Checkbox, Spin, Upload } from 'antd'
-import { WarningOutlined, EditOutlined, InboxOutlined, PlusOutlined, SwapOutlined } from '@ant-design/icons'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Table, Button, Tabs, Alert, DatePicker, Divider, Radio, Select, Tag, Typography, Space, App as AntApp, Tooltip, Checkbox, Spin, Upload } from 'antd'
+import { WarningOutlined, EditOutlined, InboxOutlined, LeftOutlined, PlusOutlined, RightOutlined, SwapOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
+import isoWeek from 'dayjs/plugin/isoWeek'
 import type { ColumnsType } from 'antd/es/table'
 import type { SelectProps } from 'antd'
 import axios from 'axios'
 import apiClient from '../api/apiClient'
 import TransactionModal, { type TxModalBody, type TxModalTx } from '../components/TransactionModal'
+import TransactionsTicketCheck from '../components/TransactionsTicketCheck'
 import { TagsField } from '../components/TagPicker'
 import PartnerTagsModal, { editableLabelRender, partnerLabelRender } from '../components/PartnerTagsModal'
 import { parseCSV } from '../features/csv/parseCSV'
 import type { CsvRow } from '../features/csv/types'
-import { analyzeCsv, type Analysis } from '../features/matching/analyze'
-import type { Candidate, MatchResult } from '../features/matching/types'
+import { analyzeCsv, loadOtherPlans, type Analysis } from '../features/matching/analyze'
+import type { Candidate, MatchResult, Target } from '../features/matching/types'
 import { rankCandidates, rankTargets, targetKey, TIER_LABELS } from '../features/matching/rules'
 import { apiError, type AccountRef } from '../features/planTransactions'
 
 const { Title, Text } = Typography
 const { Dragger } = Upload
+
+dayjs.extend(isoWeek)
 
 // Select value that stands for "no transaction, just store the ticket as processed"
 const PROCESSED = '__processed__'
@@ -69,7 +73,20 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
   const [pageSize, setPageSize] = useState(30)
   const [checkingKey, setCheckingKey] = useState<string | null>(null)
   const [sort, setSort] = useState<{ key: 'date' | 'partner'; order: 'ascend' | 'descend' } | null>(null)
-  const { candidates, pairCandidates, targets, tags } = state
+  const { pairCandidates, tags } = state
+  // Completed plans outside the CSV period, loaded the first time the user searches the plan/budget list
+  const [others, setOthers] = useState<{ targets: Target[]; candidates: Candidate[] } | null>(null)
+  const loadingOthers = useRef(false)
+  const targets = others ? [...state.targets, ...others.targets] : state.targets
+  const candidates = others ? [...state.candidates, ...others.candidates] : state.candidates
+  function searchTargets() {
+    if (others || loadingOthers.current) return
+    loadingOthers.current = true
+    loadOtherPlans(state.targets, state.accounts)
+      .then(setOthers)
+      .catch(() => message.error('Failed to load the other plans'))
+      .finally(() => { loadingOthers.current = false })
+  }
   const [createdPartners, setCreatedPartners] = useState<{ id: string; name: string; type: string }[]>([])
   const [renamedPartners, setRenamedPartners] = useState<Record<string, string>>({})
   const withNewName = <T extends { id: string; name: string }>(a: T): T => (renamedPartners[a.id] ? { ...a, name: renamedPartners[a.id] } : a)
@@ -560,7 +577,7 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
           value={row.target?.key}
           placeholder="— select plan / budget —"
           allowClear
-          showSearch
+          showSearch={{ onSearch: searchTargets }}
           disabled={row.isDuplicate}
           optionFilterProp="label"
           style={{ width: '100%' }}
@@ -865,6 +882,50 @@ const toCsvRow = (t: StoredTicket): CsvRow => ({
   ticketDbId: t.id,
 })
 
+type PeriodMode = 'week' | 'month' | 'year' | 'custom' | 'all'
+
+const UNIT = { week: 'isoWeek', month: 'month', year: 'year' } as const
+
+/** Week, month and year step with the arrows or a picker; custom takes a range; all means no date limit. */
+function PeriodFilter({ mode, offset, range, onMode, onOffset, onRange }: {
+  mode: PeriodMode
+  offset: number
+  range: [Dayjs, Dayjs] | null
+  onMode: (m: PeriodMode) => void
+  onOffset: (o: number) => void
+  onRange: (r: [Dayjs, Dayjs] | null) => void
+}) {
+  return (
+    <Space wrap>
+      <Radio.Group value={mode} onChange={(e) => onMode(e.target.value as PeriodMode)} optionType="button" buttonStyle="solid">
+        <Radio.Button value="week">Week</Radio.Button>
+        <Radio.Button value="month">Month</Radio.Button>
+        <Radio.Button value="year">Year</Radio.Button>
+        <Radio.Button value="custom">Custom</Radio.Button>
+        <Radio.Button value="all">All</Radio.Button>
+      </Radio.Group>
+      {mode === 'custom' && (
+        <DatePicker.RangePicker value={range} onChange={(v) => onRange(v && v[0] && v[1] ? [v[0], v[1]] : null)} format="D MMM YYYY" />
+      )}
+      {(mode === 'week' || mode === 'month' || mode === 'year') && range && (
+        <Space>
+          <Button icon={<LeftOutlined />} onClick={() => onOffset(offset - 1)} />
+          <DatePicker
+            picker={mode}
+            value={range[0]}
+            allowClear={false}
+            format={mode === 'week' ? (d) => `Week ${d.isoWeek()}, ${d.isoWeekYear()}` : mode === 'month' ? 'MMMM YYYY' : 'YYYY'}
+            onChange={(d) => { if (d) onOffset(d.startOf(UNIT[mode]).diff(dayjs().startOf(UNIT[mode]), mode)) }}
+            style={{ width: 180 }}
+            variant="borderless"
+          />
+          <Button icon={<RightOutlined />} onClick={() => onOffset(offset + 1)} />
+        </Space>
+      )}
+    </Space>
+  )
+}
+
 /** Stores a bank file once, then links the stored tickets of a chosen date range to plans. */
 export default function ReviewPage() {
   const { message } = AntApp.useApp()
@@ -873,9 +934,27 @@ export default function ReviewPage() {
   const [tab, setTab] = useState('link')
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
-  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null)
-  // Once the user picks dates they stay when the account changes
+  const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null)
+  const [mode, setMode] = useState<PeriodMode>('custom')
+  const [offset, setOffset] = useState(0)
+  // Once the user picks a period it stays when the account changes
   const rangeChosen = useRef(false)
+  const range = useMemo<[Dayjs, Dayjs] | null>(() => {
+    if (mode === 'all') return null
+    if (mode === 'custom') return customRange
+    const start = dayjs().add(offset, mode).startOf(UNIT[mode])
+    return [start, start.endOf(UNIT[mode])]
+  }, [mode, offset, customRange])
+  // Sets a custom range without counting as the user's choice (from the stored tickets or an import)
+  function setRange(r: [Dayjs, Dayjs]) { setMode('custom'); setCustomRange(r) }
+  const periodFilter = (
+    <PeriodFilter
+      mode={mode} offset={offset} range={range}
+      onMode={(m) => { rangeChosen.current = true; setMode(m); setOffset(0) }}
+      onOffset={(o) => { rangeChosen.current = true; setOffset(o) }}
+      onRange={(r) => { rangeChosen.current = true; setCustomRange(r) }}
+    />
+  )
   const [unlinked, setUnlinked] = useState<{ count: number; from: string; to: string } | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [loading, setLoading] = useState(false)
@@ -953,10 +1032,10 @@ export default function ReviewPage() {
   }
 
   async function loadTickets() {
-    if (!accountId || !range) return
+    if (!accountId || (!range && mode !== 'all')) return
     setLoading(true)
     try {
-      const tickets = await fetchUnlinked(accountId, range[0].format('YYYY-MM-DD'), range[1].format('YYYY-MM-DD'))
+      const tickets = await fetchUnlinked(accountId, range?.[0].format('YYYY-MM-DD'), range?.[1].format('YYYY-MM-DD'))
       if (tickets.length === 0) {
         setAnalysis(null)
         message.info('No unlinked tickets in this date range.')
@@ -1002,8 +1081,8 @@ export default function ReviewPage() {
             children: (
               <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
                 <Space wrap>
-                  <DatePicker.RangePicker value={range} onChange={(v) => { rangeChosen.current = true; setRange(v && v[0] && v[1] ? [v[0], v[1]] : null) }} format="D MMM YYYY" />
-                  <Button type="primary" onClick={loadTickets} loading={loading} disabled={!accountId || !range}>Load tickets</Button>
+                  {periodFilter}
+                  <Button type="primary" onClick={loadTickets} loading={loading} disabled={!accountId || (!range && mode !== 'all')}>Load tickets</Button>
                   <Text type="secondary">
                     {unlinked === null || !accountId
                       ? 'Select a bank account.'
@@ -1014,6 +1093,26 @@ export default function ReviewPage() {
                 </Space>
                 {loading && <Spin />}
                 {analysis && !loading && <ReviewTable key={analysisId} state={analysis} onDone={reset} onDiscard={reset} />}
+              </Space>
+            ),
+          },
+          {
+            key: 'noTicket',
+            label: 'Transactions without ticket',
+            children: (
+              <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+                {periodFilter}
+                <TransactionsTicketCheck accountId={accountId} range={range} check="noTicket" />
+              </Space>
+            ),
+          },
+          {
+            key: 'dateMismatch',
+            label: 'Date differs from ticket',
+            children: (
+              <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+                {periodFilter}
+                <TransactionsTicketCheck accountId={accountId} range={range} check="dateMismatch" />
               </Space>
             ),
           },

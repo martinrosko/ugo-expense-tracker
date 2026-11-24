@@ -303,7 +303,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
         ? [{ key: 'log', label: 'Log transaction', icon: <PlusOutlined />, onClick: () => onLogTransaction(planId, isDirect ? null : row.key) }]
         : []),
       { key: 'transactions', label: 'View transactions', icon: <UnorderedListOutlined />, onClick: () => (onShowTransactions
-        ? onShowTransactions({ title: `${planName ?? 'Plan'} \u203a ${isDirect ? 'General' : row.name}`, planId: isDirect ? planId : undefined, budgetId: isDirect ? undefined : row.key, qs: qs.toString() })
+        ? onShowTransactions({ title: `${planName ?? 'Plan'} \u203a ${isDirect ? 'General' : row.name}`, planId: isDirect ? planId : undefined, budgetId: isDirect ? undefined : row.key, generalOnly: isDirect, qs: qs.toString() })
         : navigate(`/transactions?${qs}`)) },
     ]
   }

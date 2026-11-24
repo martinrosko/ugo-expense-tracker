@@ -911,7 +911,8 @@ export default function PlanEditPage() {
       <BudgetModal
         open={budgetModal.open}
         budget={budgetModal.budget}
-        withTags={plan.isTemplate}
+        // Budgets created from a template keep the template's tags
+        withTags={plan.isTemplate || !budgetModal.budget?.templateId}
         onOk={saveBudget}
         onCancel={() => setBudgetModal({ open: false, budget: null })}
       />

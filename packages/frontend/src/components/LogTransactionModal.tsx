@@ -29,7 +29,7 @@ const fmtAmount = (v: number | null) => (v === null ? '' : ` · ${v.toLocaleStri
 // Only changed fields become overrides; untouched ones keep inheriting from the template
 const changed = <T,>(next: T | null, current: T | null) => (next !== null && next !== current ? next : undefined)
 
-function modalTx(t: Tx, amount: number | null): TxModalTx {
+function modalTx(t: Tx, amount: number | null, defaultExecutedOn?: string | null): TxModalTx {
   return {
     id: t.id,
     templateId: t.templateId,
@@ -40,6 +40,7 @@ function modalTx(t: Tx, amount: number | null): TxModalTx {
     fromAccount: t.from,
     toAccount: t.to,
     dueDateConfig: null,
+    defaultExecutedOn,
     budgetId: t.budgetId,
   }
 }
@@ -201,7 +202,7 @@ export default function LogTransactionModal({ open, planId, budgetId, onClose, o
       open={open}
       editTags
       tagDefaults={{ planId: plan?.id }}
-      tx={selected ? modalTx(selected, selected.executedOn ? selected.amount : selected.plannedAmount) : null}
+      tx={selected ? modalTx(selected, selected.executedOn ? selected.amount : selected.plannedAmount, completed ? selected.plannedDate?.toISOString() : null) : null}
       accounts={accounts}
       planIntervalType={plan?.intervalType ?? 'ONE_TIME'}
       budgets={budgets}

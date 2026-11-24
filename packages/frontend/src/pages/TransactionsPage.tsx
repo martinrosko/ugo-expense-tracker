@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import {
   Typography,
   Space,
@@ -59,14 +59,14 @@ type Transaction = {
   bankTicketId?: string | null
   fromAccount?: Account | null
   toAccount?: Account | null
-  plan?: { id: string; name: string | null; statusCode: number } | null
-  budget?: { id: string; name: string | null; statusCode: number; plan?: { id: string; name: string | null; statusCode: number } | null } | null
+  plan?: { id: string; name: string | null; statusCode: number; template?: { name: string | null } | null } | null
+  budget?: { id: string; name: string | null; statusCode: number; template?: { name: string | null } | null; plan?: { id: string; name: string | null; statusCode: number; template?: { name: string | null } | null } | null } | null
   tags?: { tag: { id: string; name: string; color?: string | null } }[]
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-type PeriodMode = 'day' | 'week' | 'month' | 'custom' | 'all'
+type PeriodMode = 'day' | 'week' | 'month' | 'year' | 'custom' | 'all'
 
 function toLocalDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -92,6 +92,10 @@ function getPeriod(mode: Exclude<PeriodMode, 'all' | 'custom'>, offset: number):
     const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6)
     return { from: monday, to: sunday, label: `Week ${getISOWeek(monday)}, ${monday.getFullYear()}` }
   }
+  if (mode === 'year') {
+    const year = now.getFullYear() + offset
+    return { from: new Date(year, 0, 1), to: new Date(year, 11, 31), label: String(year) }
+  }
   const base = new Date(now.getFullYear(), now.getMonth() + offset, 1)
   const from = new Date(base.getFullYear(), base.getMonth(), 1)
   const to = new Date(base.getFullYear(), base.getMonth() + 1, 0)
@@ -102,6 +106,7 @@ function computeOffset(mode: Exclude<PeriodMode, 'all' | 'custom'>, picked: Dayj
   const now = new Date()
   if (mode === 'day') return Math.round(picked.startOf('day').diff(dayjs().startOf('day'), 'day'))
   if (mode === 'month') return (picked.year() - now.getFullYear()) * 12 + (picked.month() - now.getMonth())
+  if (mode === 'year') return picked.year() - now.getFullYear()
   const dow = (now.getDay() + 6) % 7
   const currentMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow)
   const pickedMonday = picked.isoWeekday(1).startOf('day').toDate()
@@ -246,6 +251,7 @@ export default function TransactionsPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const lastFetchKey = useRef('')
   // Kept here because the table unmounts while reloading
   const { actionsFor, modals } = usePlanTxActions(() => setReloadKey((k) => k + 1))
 
@@ -322,7 +328,9 @@ export default function TransactionsPage() {
     setFilterBudgetId(undefined)
     if (!planId) return
     const plan = allPlans.find((p) => p.id === planId)
-    if (!plan || plan.isTemplate || !plan.startDate) return
+    // A template spans all its instances, so the period must not cut them off
+    if (plan?.isTemplate) { setMode('all'); setOffset(0); return }
+    if (!plan || !plan.startDate) return
     const d = dayjs(plan.startDate)
     const now = dayjs()
     if (plan.intervalType === 'MONTHLY') {
@@ -335,8 +343,8 @@ export default function TransactionsPage() {
       const planMonday = d.isoWeekday(1).startOf('day')
       setOffset(Math.round(planMonday.diff(currentMonday, 'day') / 7))
     } else if (plan.intervalType === 'YEARLY') {
-      setMode('custom')
-      setCustomRange([d.startOf('year'), d.endOf('year')])
+      setMode('year')
+      setOffset(d.year() - now.year())
     }
   }
 
@@ -389,7 +397,6 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
     setError(null)
     const params: Record<string, string> = { executed: 'true' }
     if (apiPlanId) params.planId = apiPlanId
@@ -402,6 +409,10 @@ export default function TransactionsPage() {
       params.from = toLocalDateStr(period.from)
       params.to = toLocalDateStr(period.to)
     }
+    // Only a changed filter shows the spinner; a reload after an edit keeps the table (and its sort, filters and page)
+    const fetchKey = JSON.stringify(params)
+    if (fetchKey !== lastFetchKey.current) setLoading(true)
+    lastFetchKey.current = fetchKey
     apiClient
       .get<Transaction[]>('/api/transactions', { params })
       .then((res) => { if (!cancelled) setTransactions(res.data) })
@@ -443,12 +454,19 @@ export default function TransactionsPage() {
     hasBankTicket: !!tx.bankTicketId,
     from: tx.fromAccount?.name,
     to: tx.toAccount?.name,
-    plan: tx.plan?.name,
-    budget: tx.budget?.name,
+    plan: (() => {
+      const p = tx.plan ?? tx.budget?.plan
+      const option = p && allPlans.find((o) => o.id === p.id)
+      // The label carries the period, which tells the instances of a template apart
+      return option ? planLabel(option) : p?.name ?? p?.template?.name
+    })(),
+    budget: tx.budget?.name ?? tx.budget?.template?.name,
     amount: tx.amount ? parseFloat(tx.amount) : null,
     kind: txKind(tx),
     tags: (tx.tags ?? []).map((t) => t.tag),
-  })), [filteredTxs])
+  })), [filteredTxs, allPlans])
+
+  const templateFiltered = !!allPlans.find((p) => p.id === filterPlanId)?.isTemplate
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -481,6 +499,7 @@ export default function TransactionsPage() {
             <Radio.Button value="day">Day</Radio.Button>
             <Radio.Button value="week">Week</Radio.Button>
             <Radio.Button value="month">Month</Radio.Button>
+            <Radio.Button value="year">Year</Radio.Button>
             <Radio.Button value="custom">Custom</Radio.Button>
             <Radio.Button value="all">All</Radio.Button>
           </Radio.Group>
@@ -494,12 +513,12 @@ export default function TransactionsPage() {
             />
           </Col>
         )}
-        {(mode === 'day' || mode === 'week' || mode === 'month') && period && (
+        {(mode === 'day' || mode === 'week' || mode === 'month' || mode === 'year') && period && (
           <Col>
             <Space>
               <Button icon={<LeftOutlined />} onClick={() => setOffset((o) => o - 1)} />
               <DatePicker
-                picker={mode === 'week' ? 'week' : mode === 'month' ? 'month' : 'date'}
+                picker={mode === 'week' ? 'week' : mode === 'month' ? 'month' : mode === 'year' ? 'year' : 'date'}
                 value={dayjs(period.from)}
                 allowClear={false}
                 format={
@@ -507,6 +526,8 @@ export default function TransactionsPage() {
                     ? (d) => `Week ${d.isoWeek()}, ${d.isoWeekYear()}`
                     : mode === 'month'
                     ? 'MMMM YYYY'
+                    : mode === 'year'
+                    ? 'YYYY'
                     : 'D MMM YYYY'
                 }
                 onChange={(d) => { if (d) setOffset(computeOffset(mode, d)) }}
@@ -636,7 +657,7 @@ export default function TransactionsPage() {
         <>
           <ExecutedTransactionsTable
             rows={rows}
-            scope={apiBudgetId ? undefined : apiPlanId ? 'budget' : 'planAndBudget'}
+            scope={templateFiltered ? 'planAndBudget' : apiBudgetId ? undefined : apiPlanId ? 'budget' : 'planAndBudget'}
             showTags
             defaultPageSize={50}
             pageSizeOptions={[20, 50, 100, 200]}

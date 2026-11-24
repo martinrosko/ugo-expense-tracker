@@ -27,11 +27,22 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const raw = await db.transaction.findMany({
     where: {
       ...ownerFilter(req.user!.sub),
-      ...(budgetId ? { budgetId: String(budgetId) } : {}),
       // Separate AND entries so the OR clauses don't overwrite each other or the owner filter
       AND: [
-        ...(planId ? [{ OR: [{ planId: String(planId) }, { budget: { planId: String(planId) } }] }] : []),
-        ...(accountId ? [{ OR: [{ fromAccountId: String(accountId) }, { toAccountId: String(accountId) }] }] : []),
+        // A template plan or budget also matches everything of its instances
+        ...(budgetId ? [{ OR: [{ budgetId: String(budgetId) }, { budget: { templateId: String(budgetId) } }] }] : []),
+        ...(planId ? [{ OR: [
+          { planId: String(planId) }, { budget: { planId: String(planId) } },
+          { plan: { templateId: String(planId) } }, { budget: { plan: { templateId: String(planId) } } },
+        ] }] : []),
+        // Accounts not overridden on the transaction come from its template
+        ...(accountId ? [{ OR: [
+          { fromAccountId: String(accountId) }, { toAccountId: String(accountId) },
+          { fromAccountId: null, template: { fromAccountId: String(accountId) } },
+          { toAccountId: null, template: { toAccountId: String(accountId) } },
+        ] }] : []),
+        // The second ticket of a movement counts as a ticket of its account
+        ...(unmatched === 'true' && accountId ? [{ pairedTickets: { none: { accountId: String(accountId) } } }] : []),
       ],
       ...(unmatched === 'true' ? { bankTicketId: null } : {}),
       ...(executed === 'true' ? { executedOn: { not: null } } : {}),
@@ -40,13 +51,13 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
 
     },
     include: {
-      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true } },
+      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true, fromAccount: { select: { id: true, name: true, type: true } }, toAccount: { select: { id: true, name: true, type: true } } } },
       tags: { include: { tag: true } },
       bankTicket: true,
       fromAccount: { select: { id: true, name: true, type: true } },
       toAccount: { select: { id: true, name: true, type: true } },
-      plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true } },
-      budget: { select: { id: true, name: true, statusCode: true, plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true } } } },
+      plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true, template: { select: { name: true } } } },
+      budget: { select: { id: true, name: true, statusCode: true, template: { select: { name: true } }, plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true, template: { select: { name: true } } } } } },
     },
     orderBy: { executedOn: 'desc' },
   })
@@ -58,6 +69,9 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
     dueDateConfig: tx.dueDateConfig ?? template?.dueDateConfig ?? null,
     fromAccountId: tx.fromAccountId ?? template?.fromAccountId ?? null,
     toAccountId: tx.toAccountId ?? template?.toAccountId ?? null,
+    // Accounts not overridden on the transaction come from its template
+    fromAccount: tx.fromAccount ?? template?.fromAccount ?? null,
+    toAccount: tx.toAccount ?? template?.toAccount ?? null,
   }))
   res.json(transactions)
 })
@@ -135,11 +149,25 @@ transactionsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
   const { name, amount, plannedAmount, plannedOn, executedOn, dueDateConfig, type, bankTicketId, fromAccountId, toAccountId, templateId, stateCode, statusCode, tagIds } = req.body
+  // Moving: a transaction belongs either to a budget or directly to a plan; planned (template-based) ones stay where they are
+  const moving = req.body.budgetId !== undefined || req.body.planId !== undefined
+  if (moving) {
+    if (existing.templateId) { res.status(409).json({ error: 'Planned transactions cannot be moved' }); return }
+    const { budgetId, planId } = req.body
+    if (budgetId) {
+      const budget = await db.budget.findFirst({ where: { id: String(budgetId), plan: { ownerId: req.user!.sub, isTemplate: false } } })
+      if (!budget) { res.status(403).json({ error: 'Forbidden' }); return }
+    } else {
+      const plan = await db.plan.findFirst({ where: { id: String(planId), ownerId: req.user!.sub, isTemplate: false } })
+      if (!plan) { res.status(403).json({ error: 'Forbidden' }); return }
+    }
+  }
   const tx = await db.$transaction(async (client) => {
     await replaceTags(client, id, req.user!.sub, tagIds)
     return client.transaction.update({
       where: { id },
       data: {
+        ...(moving ? { budgetId: req.body.budgetId ? String(req.body.budgetId) : null, planId: req.body.budgetId ? null : String(req.body.planId) } : {}),
         name,
         amount,
         plannedAmount,
@@ -211,7 +239,7 @@ transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) =
 })
 
 // POST /api/transactions/:id/unlink-bank-ticket
-// Detaches the bank ticket and deletes it, so the same CSV row can be imported and matched again.
+// Detaches the bank ticket but keeps it, unprocessed, so it can be linked to another transaction.
 transactionsRouter.post('/:id/unlink-bank-ticket', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const existing = await db.transaction.findFirst({
@@ -222,7 +250,7 @@ transactionsRouter.post('/:id/unlink-bank-ticket', async (req: AuthenticatedRequ
   if (!bankTicketId) { res.status(409).json({ error: 'Transaction has no bank ticket' }); return }
   await db.$transaction(async (client) => {
     await client.transaction.update({ where: { id }, data: { bankTicketId: null } })
-    await client.bankTicket.delete({ where: { id: bankTicketId } })
+    await client.bankTicket.update({ where: { id: bankTicketId }, data: { stateCode: 0, pairedTransactionId: null } })
   })
   res.status(204).end()
 })
@@ -233,11 +261,8 @@ transactionsRouter.post('/:id/unexecute', async (req: AuthenticatedRequest, res)
   const id = String(req.params.id)
   const existing = await db.transaction.findFirst({
     where: { id, ...ownerFilter(req.user!.sub) },
-    include: { plan: true, budget: { include: { plan: true } } },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  const plan = existing.plan ?? existing.budget?.plan
-  if (plan?.statusCode === 3 || existing.budget?.statusCode === 3) { res.status(409).json({ error: 'Transactions of completed plans can only be deleted' }); return }
   if (!existing.executedOn) { res.status(409).json({ error: 'Transaction is not executed' }); return }
   if (!existing.templateId) { res.status(409).json({ error: 'Only template transactions can be discarded; delete it instead' }); return }
   const tx = await db.$transaction(async (client) => {

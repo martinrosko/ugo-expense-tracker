@@ -1,48 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Drawer, Spin, Tooltip } from 'antd'
 import { FullscreenOutlined } from '@ant-design/icons'
 import apiClient from '../api/apiClient'
 import { apiError } from '../features/planTransactions'
-import { usePlanTxActions, type TxActionContext } from '../features/usePlanTxActions'
-import ExecutedTransactionsTable, { type ExecutedTxRow } from './ExecutedTransactionsTable'
+import { usePlanTxActions } from '../features/usePlanTxActions'
+import { actionContext, toRow, type ApiTx } from '../features/executedTxRows'
+import ExecutedTransactionsTable from './ExecutedTransactionsTable'
 
 /** What the panel lists: the executed transactions of a plan or of one budget. */
 export type TransactionsScope = {
   title: string
   planId?: string
   budgetId?: string
+  /** With planId: only the plan's own transactions, not those of its budgets */
+  generalOnly?: boolean
   /** Query of the transactions page that shows the same list */
   qs: string
-}
-
-type ApiTx = {
-  id: string
-  name: string | null
-  amount: string | null
-  executedOn: string | null
-  templateId?: string | null
-  bankTicketId?: string | null
-  fromAccount?: { name: string; type: string } | null
-  toAccount?: { name: string; type: string } | null
-  plan?: { id: string; name: string | null; statusCode: number } | null
-  budget?: { name: string | null; statusCode: number; plan?: { id: string; statusCode: number } | null } | null
-  tags?: { tag: { id: string; name: string; color?: string | null } }[]
-}
-
-const ASSET_TYPES = new Set(['CASH', 'BANK', 'INVESTMENT'])
-
-function kindOf(tx: ApiTx): ExecutedTxRow['kind'] {
-  const from = ASSET_TYPES.has(tx.fromAccount?.type ?? '')
-  const to = ASSET_TYPES.has(tx.toAccount?.type ?? '')
-  if (from && to) return 'transfer'
-  return to ? 'income' : 'expense'
-}
-
-function actionContext(tx: ApiTx): TxActionContext | null {
-  const plan = tx.plan ?? tx.budget?.plan
-  if (!plan) return null
-  return { id: tx.id, planId: plan.id, planStatus: plan.statusCode, budgetCompleted: tx.budget?.statusCode === 3, templateId: tx.templateId ?? null, executed: true }
 }
 
 /**
@@ -55,6 +29,7 @@ export default function PlanTransactionsDrawer({ scope, onClose, onChanged }: { 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const lastFetchKey = useRef('')
 
   const { actionsFor, modals } = usePlanTxActions(() => {
     setReloadKey((k) => k + 1)
@@ -62,32 +37,22 @@ export default function PlanTransactionsDrawer({ scope, onClose, onChanged }: { 
   })
 
   useEffect(() => {
-    if (!scope) return
+    if (!scope) { lastFetchKey.current = ''; return }
     let cancelled = false
-    setLoading(true)
+    // Only a new scope shows the spinner; a reload after an edit keeps the table (and its sort, filters and page)
+    const fetchKey = `${scope.planId}|${scope.budgetId}|${scope.generalOnly}`
+    if (fetchKey !== lastFetchKey.current) setLoading(true)
+    lastFetchKey.current = fetchKey
     setError(null)
     apiClient.get<ApiTx[]>('/api/transactions', { params: { executed: 'true', planId: scope.planId, budgetId: scope.budgetId } })
-      .then((res) => { if (!cancelled) setTxs(res.data) })
+      .then((res) => { if (!cancelled) setTxs(scope.generalOnly ? res.data.filter((t) => !t.budget) : res.data) })
       .catch((err) => { if (!cancelled) setError(apiError(err, 'Failed to load transactions')) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [scope, reloadKey])
 
   const byId = useMemo(() => new Map(txs.map((t) => [t.id, t])), [txs])
-  const rows = useMemo<ExecutedTxRow[]>(() => txs.map((t) => ({
-    id: t.id,
-    executedOn: t.executedOn,
-    name: t.name,
-    hasTemplate: !!t.templateId,
-    hasBankTicket: !!t.bankTicketId,
-    from: t.fromAccount?.name,
-    to: t.toAccount?.name,
-    plan: t.plan?.name,
-    budget: t.budget?.name,
-    amount: t.amount ? parseFloat(t.amount) : null,
-    kind: kindOf(t),
-    tags: (t.tags ?? []).map((x) => x.tag),
-  })), [txs])
+  const rows = useMemo(() => txs.map(toRow), [txs])
 
   function maximize() {
     if (!scope) return

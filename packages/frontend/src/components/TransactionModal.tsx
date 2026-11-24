@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { App as AntApp, Button, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Tag, Typography } from 'antd'
+import { App as AntApp, Button, Collapse, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Tag, Typography } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import apiClient from '../api/apiClient'
@@ -44,6 +44,8 @@ export type TxModalTx = {
   budgetId?: string | null
   /** Execute mode: execution date to preselect (defaults to today) */
   executedOn?: string | null
+  /** Execute mode: date to preselect when the transaction has no execution date yet (defaults to today) */
+  defaultExecutedOn?: string | null
 }
 
 export type TxModalBody = {
@@ -95,7 +97,7 @@ const MONTH_OPTIONS = [
  * Add/edit a planned transaction ('plan') or log it as executed ('execute').
  * Execute mode asks for the execution date instead of the due day; with tx = null it logs an unplanned transaction.
  */
-export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, initialBudgetId, extra, resetKey, title, okText, okDisabled, editTags, initialTagIds, tagDefaults, onPartnerCreated, onPartnerRenamed, bankTicketControls, onBankTicketUnlinked, onOk, onCancel }: {
+export default function TransactionModal({ open, tx, accounts, planIntervalType, mode = 'plan', budgets, budgetLocked, plans, planId, onPlanChange, initialBudgetId, extra, resetKey, title, okText, okDisabled, editTags, initialTagIds, tagDefaults, onPartnerCreated, onPartnerRenamed, bankTicketControls, onBankTicketUnlinked, onOk, onCancel }: {
   open: boolean
   tx: TxModalTx | null
   accounts: AccountRef[]
@@ -104,6 +106,10 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   /** Shows a budget picker (execute mode); a null value means "no budget" */
   budgets?: { value: string | null; label: string }[]
   budgetLocked?: boolean
+  /** Shows a plan picker above the budget picker; the caller supplies the budgets of the chosen plan */
+  plans?: { value: string; label: string }[]
+  planId?: string
+  onPlanChange?: (planId: string) => void
   /** Execute mode: budget to preselect for a new transaction (null = no budget) */
   initialBudgetId?: string | null
   /** Rendered above the form, e.g. plan and transaction pickers */
@@ -286,7 +292,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
     if (!open) return
     form.resetFields()
     setDueN(1); setDueDayType('day'); setDueDirection('from_start'); setDueWeekday(1); setDueMonth(0)
-    if (execute) form.setFieldsValue({ executedOn: tx?.executedOn ? dayjs(tx.executedOn) : dayjs(), budgetId: tx?.budgetId ?? initialBudgetId ?? null })
+    if (execute) form.setFieldsValue({ executedOn: tx?.executedOn ? dayjs(tx.executedOn) : tx?.defaultExecutedOn ? dayjs(tx.defaultExecutedOn) : dayjs(), budgetId: tx?.budgetId ?? initialBudgetId ?? null })
     if (tx) {
       setDirection(directionFromTx(tx))
       form.setFieldsValue({
@@ -397,7 +403,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
           </Form.Item>
           {execute && (
             <Form.Item name="executedOn" label="Executed on" rules={[{ required: true }]}>
-              <DatePicker allowClear={false} style={{ width: '100%' }} />
+              <DatePicker allowClear={false} showToday style={{ width: '100%' }} />
             </Form.Item>
           )}
           <Form.Item name="note" label="Note">
@@ -425,6 +431,14 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
               labelRender={direction === 'expense' ? partnerLabelRender(setEditPartnerId) : undefined}
             />
           </Form.Item>
+          {execute && budgets && plans && (
+            <Form.Item label="Plan">
+              <Select
+                showSearch optionFilterProp="label" options={plans} value={planId}
+                onChange={(id: string) => { form.setFieldValue('budgetId', null); onPlanChange?.(id) }}
+              />
+            </Form.Item>
+          )}
           {execute && budgets && (
             <Form.Item name="budgetId" label="Budget" style={{ marginBottom: 0 }}>
               <Select options={budgets} disabled={budgetLocked} />
@@ -510,25 +524,26 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
         )}
 
         {bankTicket !== undefined && (
-          <>
-            <Divider style={{ margin: '4px 0' }} />
-            <div>
-              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                <Text strong>Bank ticket</Text>
-                {bankTicket && (
-                  <Popconfirm
-                    title="Unlink the bank ticket?"
-                    description="The bank ticket is removed, so the CSV row can be imported and matched again."
-                    okText="Unlink"
-                    okType="danger"
-                    onConfirm={unlinkBankTicket}
-                  >
-                    <Button size="small" danger loading={unlinking}>Unlink</Button>
-                  </Popconfirm>
-                )}
-              </Space>
-              {!bankTicket && <div style={{ marginTop: 8 }}><Text type="secondary">No bank ticket linked</Text></div>}
-              {bankTicket && <Descriptions size="small" column={1} style={{ marginTop: 8 }} items={[
+            <Collapse
+              size="small"
+              items={[{
+                key: 'ticket',
+                label: <Text strong>Bank ticket{bankTicket ? '' : <Text type="secondary" style={{ fontWeight: 'normal' }}> - none linked</Text>}</Text>,
+                collapsible: bankTicket ? undefined : 'disabled',
+                extra: bankTicket && (
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <Popconfirm
+                      title="Unlink the bank ticket?"
+                      description="The ticket stays stored as unlinked, so it can be matched to another transaction."
+                      okText="Unlink"
+                      okType="danger"
+                      onConfirm={unlinkBankTicket}
+                    >
+                      <Button size="small" danger loading={unlinking}>Unlink</Button>
+                    </Popconfirm>
+                  </span>
+                ),
+                children: bankTicket && <Descriptions size="small" column={1} items={[
                 { key: 'date', label: 'Date', children: new Date(bankTicket.executedOn).toLocaleDateString('sk-SK') },
                 { key: 'amount', label: 'Amount', children: `${Number(bankTicket.amount).toFixed(2)} \u20ac` },
                 ...([
@@ -540,9 +555,9 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
                   ['ss', 'Specific symbol', bankTicket.specificSymbol],
                   ['ticket', 'Ticket ID', bankTicket.ticketId],
                 ] as const).filter(([, , value]) => !!value).map(([key, label, value]) => ({ key, label, children: value })),
-              ]} />}
-            </div>
-          </>
+              ]} />,
+              }]}
+            />
         )}
       </Space>
 
