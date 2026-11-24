@@ -116,8 +116,8 @@ export function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDa
   const budgetEnvelope = fullEnvelope * portion
   const planned = budgetEnvelope + txPlannedSum
   // Reserved: remaining budget capacity after unplanned actuals, prorated to the period
-  // Unplanned actuals are executed txs that have no dueDateConfig (ad-hoc spending)
-  const unplannedActual = txs
+  // Unplanned actuals are executed txs that have no dueDateConfig (ad-hoc spending); all of the budget's, not only those in the viewed period
+  const unplannedActual = allTxs
     .filter((t) => t.executedOn !== null && !t.dueDateConfig)
     .reduce((s, t) => s + signedAmount(t, t.amount), 0)
   let reservation = completed ? 0 : fullEnvelope - unplannedActual // envelope minus what was already spent
@@ -132,11 +132,12 @@ export function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDa
     const today = new Date()
     const pe = new Date(planEndDate)
     const ps = new Date(planStartDate)
-    // Active period starts from today (or from filter.from if later)
-    const activeFrom = from > today ? from : today < ps ? ps : today
+    // The remainder is spread over the days left in the plan (from today, or the plan start if later); the window gets its share
+    const activeFrom = today < ps ? ps : today
+    const windowFrom = from > activeFrom ? from : activeFrom
     const activeTo = to > pe ? pe : to
     const activeInterval = Math.round((pe.getTime() - activeFrom.getTime()) / 86400000) + 1
-    const periodInterval = Math.round((activeTo.getTime() - activeFrom.getTime()) / 86400000) + 1
+    const periodInterval = Math.round((activeTo.getTime() - windowFrom.getTime()) / 86400000) + 1
     if (activeInterval > 0 && periodInterval > 0) {
       reservation = reservation * (periodInterval / activeInterval)
     } else {
@@ -159,6 +160,13 @@ export function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDa
 }
 
 export function planStats(plan: PlanLike, from?: Date, to?: Date): BudgetStats {
+  const stats = openPlanStats(plan, from, to)
+  // A scheduled plan has nothing executed yet, so everything planned is still to come
+  if (plan.statusCode !== 2) return stats
+  return { ...stats, actual: 0, incActual: 0, expActual: 0, reserved: stats.planned, incReserved: stats.incPlanned, expReserved: stats.expPlanned }
+}
+
+function openPlanStats(plan: PlanLike, from?: Date, to?: Date): BudgetStats {
   const bs = (plan.budgets ?? []).map((b) => budgetStats(b, from, to, plan.startDate, plan.endDate, plan.statusCode === 3))
   const allDirectTxs = (plan.transactions ?? []).filter((t) => t.type === 'TRANSACTION')
   const directTxs = from && to ? allDirectTxs.filter((t) => inPeriod(t, from, to, plan.startDate)) : allDirectTxs

@@ -810,10 +810,10 @@ export default function PlansOverviewPage() {
     [mode, plans]
   )
 
-  // Scheduled, draft and cancelled plans have nothing executed, so they stay out of the totals
+  // Draft and cancelled plans stay out of the totals; scheduled ones count as fully reserved
   const totals = useMemo(() => {
     if (mode === 'templates') return null
-    const executed = plans.filter((p) => p.statusCode === 1 || p.statusCode === 3)
+    const executed = plans.filter((p) => p.statusCode === 1 || p.statusCode === 2 || p.statusCode === 3)
     if (executed.length === 0) return null
     return { count: executed.length, stats: sumStats(executed.map((p) => planStats(p, period?.from, period?.to))) }
   }, [mode, plans, period])
