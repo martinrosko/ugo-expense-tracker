@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { Table, Button, Divider, Select, Tag, Typography, Space, App as AntApp, Tooltip, Checkbox, Spin, Upload } from 'antd'
-import { WarningOutlined, EditOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons'
+import { Table, Button, Tabs, Alert, DatePicker, Divider, Select, Tag, Typography, Space, App as AntApp, Tooltip, Checkbox, Spin, Upload } from 'antd'
+import { WarningOutlined, EditOutlined, InboxOutlined, PlusOutlined, SwapOutlined } from '@ant-design/icons'
+import dayjs, { type Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
 import type { SelectProps } from 'antd'
 import axios from 'axios'
 import apiClient from '../api/apiClient'
 import TransactionModal, { type TxModalBody, type TxModalTx } from '../components/TransactionModal'
 import { TagsField } from '../components/TagPicker'
-import PartnerTagsModal, { partnerLabelRender } from '../components/PartnerTagsModal'
+import PartnerTagsModal, { editableLabelRender, partnerLabelRender } from '../components/PartnerTagsModal'
 import { parseCSV } from '../features/csv/parseCSV'
 import type { CsvRow } from '../features/csv/types'
 import { analyzeCsv, type Analysis } from '../features/matching/analyze'
@@ -49,17 +50,21 @@ interface EditableRow extends MatchResult {
 const fmtDate = (d: Date | null) => (d ? d.toLocaleDateString('sk-SK') : 'no date')
 const fmtAmount = (v: number | null) => (v === null ? '' : ` · ${v.toFixed(2)} €`)
 
-function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: () => void; onDiscard: () => void }) {
+function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analysis; onDone: () => void; onDiscard: () => void }) {
   const { message } = AntApp.useApp()
+  // Reloaded after a planned transaction template was edited
+  const [state, setState] = useState(initialState)
 
   const [rows, setRows] = useState<EditableRow[]>(
-    state.results.map((r, i) => ({ ...r, key: String(i), selected: false })),
+    initialState.results.map((r, i) => ({ ...r, key: String(i), selected: false })),
   )
   const [submitting, setSubmitting] = useState(false)
   const [detailsKey, setDetailsKey] = useState<string | null>(null)
   const [hideDuplicates, setHideDuplicates] = useState(true)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(30)
+  const [checkingKey, setCheckingKey] = useState<string | null>(null)
+  const [sort, setSort] = useState<{ key: 'date' | 'partner'; order: 'ascend' | 'descend' } | null>(null)
   const { candidates, pairCandidates, targets, tags } = state
   const [createdPartners, setCreatedPartners] = useState<{ id: string; name: string; type: string }[]>([])
   const [renamedPartners, setRenamedPartners] = useState<Record<string, string>>({})
@@ -69,8 +74,10 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
   const [editPartnerId, setEditPartnerId] = useState<string | null>(null)
   // Row that receives the partner account created in the dialog
   const [newPartnerRow, setNewPartnerRow] = useState<string | null>(null)
+  // Template (or standalone) transaction behind a matched planned transaction, being edited
+  const [plannedEdit, setPlannedEdit] = useState<{ id: string; intervalType: string; tx: TxModalTx } | null>(null)
 
-  const ruleTags = useRef(new Map(state.results.map((r, i) => [String(i), r.tags])))
+  const ruleTags = useRef(new Map(initialState.results.map((r, i) => [String(i), r.tags])))
   const appliedSignature = useRef(new Map<string, string>())
 
   // Matched rows get the tags of the planned transaction (or its template); new ones those of plan, budget and accounts
@@ -114,6 +121,28 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
 
   function updateRow(key: string, patch: Partial<EditableRow>) {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+  }
+
+  async function checkCounterpart(row: EditableRow) {
+    setCheckingKey(row.key)
+    try {
+      const res = await apiClient.post<{ status: 'none' | 'counterpartProcessed' | 'markedAsDuplicate' | 'alreadyProcessed'; counterpart?: { account: string; executedOn: string } }>(
+        `/api/bank-tickets/${row.csvRow.ticketDbId}/check-counterpart`,
+      )
+      const { status, counterpart } = res.data
+      const where = counterpart ? `${counterpart.account}, ${counterpart.executedOn}` : ''
+      if (status === 'none') message.info('No counterpart found in your other accounts (opposite amount, within 5 days).')
+      else if (status === 'alreadyProcessed') message.info(`The counterpart (${where}) and this ticket are already processed.`)
+      else if (status === 'counterpartProcessed') message.success(`Counterpart in ${where} marked as processed.`)
+      else {
+        message.success(`The counterpart in ${where} is already linked, so this ticket was marked as processed.`)
+        updateRow(row.key, { isDuplicate: true, paired: true, selected: false, matched: undefined, target: undefined, ticketDbId: row.csvRow.ticketDbId })
+      }
+    } catch (err) {
+      message.error(apiError(err, 'Failed to check for a counterpart'))
+    } finally {
+      setCheckingKey(null)
+    }
   }
 
   async function unmarkProcessed(row: EditableRow) {
@@ -190,6 +219,61 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
     }
   }
 
+  /** Opens the template of the planned transaction (or the transaction itself when it has none) for editing. */
+  async function openPlannedEdit(m: Candidate) {
+    const id = m.templateId ?? m.id
+    try {
+      const [txRes, planRes] = await Promise.all([
+        apiClient.get<{ name: string | null; plannedAmount: string | null; dueDateConfig: string | null; fromAccountId: string | null; toAccountId: string | null }>(`/api/transactions/${id}`),
+        apiClient.get<{ intervalType: string; templateId: string | null }>(`/api/plans/${m.planId}`),
+      ])
+      // Instances are stored as one-time; the recurrence comes from the plan template
+      const intervalType = m.templateId && planRes.data.templateId
+        ? (await apiClient.get<{ intervalType: string }>(`/api/plans/${planRes.data.templateId}`)).data.intervalType
+        : planRes.data.intervalType
+      const t = txRes.data
+      const byId = (accId: string | null) => (accId ? allAccounts.find((a) => a.id === accId) ?? null : null)
+      setPlannedEdit({
+        id,
+        intervalType,
+        tx: {
+          id, name: t.name, plannedAmount: t.plannedAmount, dueDateConfig: t.dueDateConfig,
+          fromAccountId: t.fromAccountId, toAccountId: t.toAccountId, fromAccount: byId(t.fromAccountId), toAccount: byId(t.toAccountId),
+        },
+      })
+    } catch (err) {
+      message.error(apiError(err, 'Failed to load the planned transaction'))
+    }
+  }
+
+  async function savePlannedEdit(body: TxModalBody) {
+    if (!plannedEdit) return
+    try {
+      await apiClient.patch(`/api/transactions/${plannedEdit.id}`, {
+        name: body.name ?? undefined,
+        plannedAmount: body.plannedAmount ?? undefined,
+        fromAccountId: body.fromAccountId ?? undefined,
+        toAccountId: body.toAccountId ?? undefined,
+        dueDateConfig: body.dueDateConfig ?? undefined,
+        tagIds: body.tagIds,
+      })
+      // Loads the changed template values into the candidates, keeping what was edited in the grid
+      const fresh = await analyzeCsv(rows.map((r) => r.csvRow), state.accountId)
+      const byId = new Map([...fresh.candidates, ...fresh.pairCandidates].map((c) => [c.id, c]))
+      setState(fresh)
+      setRows((prev) => prev.map((r) => {
+        const updated = r.matched && byId.get(r.matched.id)
+        if (!updated) return r
+        appliedSignature.current.delete(r.key)
+        return { ...r, matched: updated }
+      }))
+      setPlannedEdit(null)
+      message.success('Planned transaction updated')
+    } catch (err) {
+      message.error(apiError(err, 'Failed to update the planned transaction'))
+    }
+  }
+
   function modalTxFor(row: EditableRow): TxModalTx {
     const acc = rowAccounts(row)
     const byId = (id: string | null) => (id ? allAccounts.find((a) => a.id === id) ?? null : null)
@@ -243,6 +327,7 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
         }
 
         const ticketRes = await apiClient.post<{ id: string }[]>('/api/bank-tickets', {
+          id: csv.ticketDbId,
           accountId: state.accountId,
           ticketId: csv.ticketid || undefined,
           name: `${csv.partnername} ${csv.executedon}`.trim(),
@@ -334,7 +419,15 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
     setSubmitting(false)
   }
 
-  const visibleRows = hideDuplicates ? rows.filter((r) => !r.isDuplicate) : rows
+  const unsortedRows = hideDuplicates ? rows.filter((r) => !r.isDuplicate) : rows
+  // Sorted here rather than by the table, so the header checkbox selects the rows of the page that is shown
+  const visibleRows = sort
+    ? [...unsortedRows].sort((a, b) => {
+        const text = (r: EditableRow) => `${r.csvRow.partnername} ${r.csvRow.reference}`
+        const order = sort.key === 'date' ? a.csvRow.executedon.localeCompare(b.csvRow.executedon) : text(a).localeCompare(text(b))
+        return sort.order === 'ascend' ? order : -order
+      })
+    : unsortedRows
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visibleRows.length / pageSize)))
   const pageSelectable = visibleRows.slice((currentPage - 1) * pageSize, currentPage * pageSize).filter((r) => !r.isDuplicate)
 
@@ -384,9 +477,12 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
         )
       },
     },
-    { title: 'Date', dataIndex: ['csvRow', 'executedon'], width: 92 },
+    { title: 'Date', key: 'date', dataIndex: ['csvRow', 'executedon'], width: 92, sorter: true, sortOrder: sort?.key === 'date' ? sort.order : null },
     {
       title: 'Partner / Ref',
+      key: 'partner',
+      sorter: true,
+      sortOrder: sort?.key === 'partner' ? sort.order : null,
       render: (_, row) => (
         <div style={{ overflowWrap: 'anywhere' }}>
           <div>{row.csvRow.partnername}</div>
@@ -504,6 +600,11 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
             style={{ width: '100%' }}
             popupMatchSelectWidth={520}
             options={options}
+            labelRender={(option) => {
+              const m = row.matched
+              if (row.markProcessed || !m || m.pairOnly || option.value !== m.id) return option.label
+              return editableLabelRender('Click to edit the planned transaction template', () => void openPlannedEdit(m))(option)
+            }}
             onChange={(val?: string) => {
               if (val === PROCESSED) {
                 updateRow(row.key, { markProcessed: true, matched: undefined })
@@ -566,17 +667,28 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
     },
     {
       title: 'Details',
-      width: 56,
+      width: 88,
       render: (_, row) => (
-        <Tooltip title="Fill in full transaction details">
-          <Button
-            size="small"
-            type={row.details ? 'primary' : 'default'}
-            icon={<EditOutlined />}
-            disabled={row.isDuplicate || row.markProcessed || row.matched?.pairOnly}
-            onClick={() => setDetailsKey(row.key)}
-          />
-        </Tooltip>
+        <Space size={4}>
+          <Tooltip title="Fill in full transaction details">
+            <Button
+              size="small"
+              type={row.details ? 'primary' : 'default'}
+              icon={<EditOutlined />}
+              disabled={row.isDuplicate || row.markProcessed || row.matched?.pairOnly}
+              onClick={() => setDetailsKey(row.key)}
+            />
+          </Tooltip>
+          <Tooltip title="Look for the other side of a movement in your other accounts (opposite amount, within 5 days)">
+            <Button
+              size="small"
+              icon={<SwapOutlined />}
+              loading={checkingKey === row.key}
+              disabled={row.isDuplicate || !row.csvRow.ticketDbId}
+              onClick={() => void checkCounterpart(row)}
+            />
+          </Tooltip>
+        </Space>
       ),
     },
   ]
@@ -606,6 +718,10 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
         rowKey="key"
         size="small"
         pagination={{ pageSize, current: currentPage, onChange: (p, size) => { setPage(p); setPageSize(size) } }}
+        onChange={(_p, _f, s) => {
+          const one = Array.isArray(s) ? s[0] : s
+          setSort(one?.order && (one.columnKey === 'date' || one.columnKey === 'partner') ? { key: one.columnKey, order: one.order } : null)
+        }}
         tableLayout="fixed"
         rowClassName={(r) => (r.isDuplicate ? 'ant-table-row-disabled' : '')}
         onRow={(r) => ({ style: !r.matched && !r.isDuplicate && !r.markProcessed ? { background: '#fffbe6' } : undefined })}
@@ -632,6 +748,20 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
         onPartnerCreated={(a) => setCreatedPartners((prev) => [...prev, a])}
         onPartnerRenamed={(id, name) => setRenamedPartners((prev) => ({ ...prev, [id]: name }))}
       />
+      <TransactionModal
+        open={plannedEdit !== null}
+        tx={plannedEdit?.tx ?? null}
+        accounts={allAccounts}
+        planIntervalType={plannedEdit?.intervalType ?? 'ONE_TIME'}
+        editTags
+        resetKey={plannedEdit?.id ?? ''}
+        title="Edit planned transaction"
+        okText="Save"
+        onOk={savePlannedEdit}
+        onCancel={() => setPlannedEdit(null)}
+        onPartnerCreated={(a) => setCreatedPartners((prev) => [...prev, a])}
+        onPartnerRenamed={(id, name) => setRenamedPartners((prev) => ({ ...prev, [id]: name }))}
+      />
       <PartnerTagsModal
         partner={partners.find((p) => p.id === editPartnerId) ?? null}
         existingNames={partners.map((p) => p.name)}
@@ -655,89 +785,216 @@ function ReviewTable({ state, onDone, onDiscard }: { state: Analysis; onDone: ()
   )
 }
 
-/** Uploads a bank CSV and goes straight to matching it against the plans. */
+type StoredTicket = {
+  id: string
+  ticketId: string | null
+  amount: string
+  executedOn: string
+  partnerName: string | null
+  partnerAccountNumber: string | null
+  reference: string | null
+  variableSymbol: string | null
+  constantSymbol: string | null
+  specificSymbol: string | null
+}
+
+type ImportResult = { created: number; existing: number; moved: number; conflicts: string[]; total: number }
+
+const toCsvRow = (t: StoredTicket): CsvRow => ({
+  executedon: t.executedOn.slice(0, 10),
+  amount: Number(t.amount),
+  partnername: t.partnerName ?? '',
+  partneraccountnumber: t.partnerAccountNumber ?? '',
+  reference: t.reference ?? '',
+  variablesymbol: t.variableSymbol ?? '',
+  constantsymbol: t.constantSymbol ?? '',
+  specificsymbol: t.specificSymbol ?? '',
+  ticketid: t.ticketId ?? '',
+  ticketDbId: t.id,
+})
+
+/** Stores a bank file once, then links the stored tickets of a chosen date range to plans. */
 export default function ReviewPage() {
   const { message } = AntApp.useApp()
-  const [csvRows, setCsvRows] = useState<CsvRow[]>([])
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
   const [accountId, setAccountId] = useState<string>()
+  const [tab, setTab] = useState('link')
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null)
+  // Once the user picks dates they stay when the account changes
+  const rangeChosen = useRef(false)
+  const [unlinked, setUnlinked] = useState<{ count: number; from: string; to: string } | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [loading, setLoading] = useState(false)
   // Remounts the review table whenever a new analysis is made
   const [analysisId, setAnalysisId] = useState(0)
 
-  async function handleFile(file: File) {
-    try {
-      const parsed = await parseCSV(file)
-      let selected = accountId
-      if (bankAccounts.length === 0) {
-        const res = await apiClient.get<BankAccount[]>('/api/accounts')
+  useEffect(() => {
+    apiClient.get<BankAccount[]>('/api/accounts')
+      .then((res) => {
         const banks = res.data.filter((a) => a.type === 'BANK')
         setBankAccounts(banks)
-        selected = (banks.find((a) => a.isDefault) ?? banks[0])?.id
-        setAccountId(selected)
-      }
-      if (!selected) {
-        message.warning('No bank account found. Create one first.')
-        return false
-      }
-      setAnalysis(null)
-      setCsvRows(parsed)
+        setAccountId((banks.find((a) => a.isDefault) ?? banks[0])?.id)
+      })
+      .catch(() => message.error('Failed to load bank accounts'))
+  }, [message])
+
+  async function fetchUnlinked(account: string, from?: string, to?: string) {
+    const res = await apiClient.get<StoredTicket[]>('/api/bank-tickets', { params: { accountId: account, unlinked: 'true', from, to } })
+    return res.data
+  }
+
+  async function refreshUnlinked(account: string) {
+    try {
+      const tickets = await fetchUnlinked(account)
+      const dates = tickets.map((t) => t.executedOn.slice(0, 10)).sort()
+      setUnlinked(tickets.length > 0 ? { count: tickets.length, from: dates[0], to: dates[dates.length - 1] } : { count: 0, from: '', to: '' })
+      return dates
     } catch {
-      message.error('Failed to parse CSV. Check the file format.')
+      setUnlinked(null)
+      return []
+    }
+  }
+
+  useEffect(() => {
+    setAnalysis(null)
+    setImportResult(null)
+    if (!accountId) return
+    void refreshUnlinked(accountId).then((dates) => {
+      if (dates.length > 0 && !rangeChosen.current) setRange([dayjs(dates[0]), dayjs(dates[dates.length - 1])])
+    })
+  }, [accountId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleFile(file: File) {
+    if (!accountId) {
+      message.warning('Select the bank account this file belongs to first.')
+      return false
+    }
+    setImporting(true)
+    try {
+      const parsed = (await parseCSV(file)).filter((r) => r.executedon)
+      const rows = parsed.map((r) => ({
+        ticketId: r.ticketid || undefined,
+        name: `${r.partnername} ${r.executedon}`.trim(),
+        amount: r.amount,
+        executedOn: r.executedon,
+        partnerName: r.partnername,
+        partnerAccountNumber: r.partneraccountnumber,
+        reference: r.reference,
+        variableSymbol: r.variablesymbol,
+        constantSymbol: r.constantsymbol,
+        specificSymbol: r.specificsymbol,
+      }))
+      const res = await apiClient.post<Omit<ImportResult, 'total'>>('/api/bank-tickets/import', { accountId, rows })
+      setImportResult({ ...res.data, total: rows.length })
+      setAnalysis(null)
+      const dates = rows.map((r) => r.executedOn).sort()
+      if (dates.length > 0) setRange([dayjs(dates[0]), dayjs(dates[dates.length - 1])])
+      await refreshUnlinked(accountId)
+    } catch (err) {
+      message.error(apiError(err, 'Failed to import the file. Check the file format.'))
+    } finally {
+      setImporting(false)
     }
     return false
   }
 
-  useEffect(() => {
-    if (csvRows.length === 0 || !accountId) return
-    let cancelled = false
+  async function loadTickets() {
+    if (!accountId || !range) return
     setLoading(true)
-    analyzeCsv(csvRows, accountId)
-      .then((result) => {
-        if (cancelled) return
-        setAnalysis(result)
-        setAnalysisId((n) => n + 1)
-      })
-      .catch((err) => { if (!cancelled) message.error(apiError(err, 'Failed to load data')) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [csvRows, accountId, message])
+    try {
+      const tickets = await fetchUnlinked(accountId, range[0].format('YYYY-MM-DD'), range[1].format('YYYY-MM-DD'))
+      if (tickets.length === 0) {
+        setAnalysis(null)
+        message.info('No unlinked tickets in this date range.')
+        return
+      }
+      setAnalysis(await analyzeCsv(tickets.map(toCsvRow), accountId))
+      setAnalysisId((n) => n + 1)
+    } catch (err) {
+      message.error(apiError(err, 'Failed to load data'))
+    } finally {
+      setLoading(false)
+    }
+  }
 
+  // Back to the date selection; what is still unlinked is counted again
   function reset() {
-    setCsvRows([])
     setAnalysis(null)
+    if (accountId) void refreshUnlinked(accountId)
   }
 
   return (
     <Space orientation="vertical" size="large" style={{ width: '100%' }}>
       <Title level={3}>Upload &amp; Review</Title>
 
-      <Dragger accept=".csv" beforeUpload={handleFile} showUploadList={false} style={{ padding: '24px' }}>
-        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-        <p className="ant-upload-text">Click or drag a bank CSV file here</p>
-        <p className="ant-upload-hint">Supports your bank's standard CSV export format.</p>
-      </Dragger>
+      <Space size="middle" wrap>
+        <Text strong>Bank account:</Text>
+        <Select
+          style={{ width: 280 }}
+          value={accountId}
+          onChange={setAccountId}
+          placeholder="Select the bank account"
+          options={bankAccounts.map((a) => ({ value: a.id, label: a.name }))}
+        />
+      </Space>
 
-      {csvRows.length > 0 && (
-        <Space size="middle" wrap>
-          <Text type="secondary">{csvRows.length} rows parsed</Text>
-          {bankAccounts.length > 0 && (
-            <span>
-              <Text strong style={{ marginRight: 8 }}>Bank account in this CSV:</Text>
-              <Select
-                style={{ width: 280 }}
-                value={accountId}
-                onChange={setAccountId}
-                options={bankAccounts.map((a) => ({ value: a.id, label: a.name }))}
-              />
-            </span>
-          )}
-        </Space>
-      )}
-
-      {loading && <Spin />}
-      {analysis && !loading && <ReviewTable key={analysisId} state={analysis} onDone={reset} onDiscard={reset} />}
+      <Tabs
+        activeKey={tab}
+        onChange={setTab}
+        items={[
+          {
+            key: 'link',
+            label: 'Link tickets to plans',
+            children: (
+              <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+                <Space wrap>
+                  <DatePicker.RangePicker value={range} onChange={(v) => { rangeChosen.current = true; setRange(v && v[0] && v[1] ? [v[0], v[1]] : null) }} format="D MMM YYYY" />
+                  <Button type="primary" onClick={loadTickets} loading={loading} disabled={!accountId || !range}>Load tickets</Button>
+                  <Text type="secondary">
+                    {unlinked === null || !accountId
+                      ? 'Select a bank account.'
+                      : unlinked.count === 0
+                        ? 'No unlinked tickets stored for this account.'
+                        : `${unlinked.count} unlinked ticket(s) stored, from ${unlinked.from} to ${unlinked.to}.`}
+                  </Text>
+                </Space>
+                {loading && <Spin />}
+                {analysis && !loading && <ReviewTable key={analysisId} state={analysis} onDone={reset} onDiscard={reset} />}
+              </Space>
+            ),
+          },
+          {
+            key: 'import',
+            label: 'Import a bank file',
+            children: (
+              <Space orientation="vertical" style={{ width: '100%' }}>
+                <Dragger accept=".csv" beforeUpload={handleFile} showUploadList={false} disabled={importing || !accountId} style={{ padding: '16px' }}>
+                  <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                  <p className="ant-upload-text">Click or drag the bank CSV of the selected account here</p>
+                  <p className="ant-upload-hint">
+                    The tickets are stored once. Importing a file again does not duplicate them; if a ticket was stored for another account, it moves to the selected one.
+                  </p>
+                </Dragger>
+                {importing && <Spin />}
+                {importResult && (
+                  <Alert
+                    type={importResult.moved > 0 || importResult.conflicts.length > 0 ? 'warning' : 'success'}
+                    showIcon
+                    title={`${importResult.total} rows read: ${importResult.created} new, ${importResult.existing} already stored`}
+                    description={
+                      (importResult.moved > 0 ? `${importResult.moved} ticket(s) were stored for another account and were moved to the selected one, together with the account of their transactions. ` : '')
+                      + (importResult.conflicts.length > 0 ? `${importResult.conflicts.length} could not be stored: ${importResult.conflicts.slice(0, 5).join(', ')}${importResult.conflicts.length > 5 ? '…' : ''}` : '')
+                      || undefined
+                    }
+                  />
+                )}
+              </Space>
+            ),
+          },
+        ]}
+      />
     </Space>
   )
 }

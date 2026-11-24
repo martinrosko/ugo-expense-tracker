@@ -18,4 +18,6 @@ export interface CsvRow {
   specificsymbol: string
   /** Bank's own transaction ID — used for deduplication → rw_ticketid */
   ticketid: string
+  /** Set when the row comes from a ticket already stored in the database */
+  ticketDbId?: string
 }

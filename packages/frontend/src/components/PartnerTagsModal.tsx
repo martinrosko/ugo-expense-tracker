@@ -93,11 +93,11 @@ export default function PartnerTagsModal({ partner, creating, existingNames = []
   )
 }
 
-/** Select `labelRender` that makes the selected partner clickable to edit it. */
-export function partnerLabelRender(onEdit: (id: string) => void) {
+/** Select `labelRender` that makes the selected value clickable to edit it. */
+export function editableLabelRender(title: string, onEdit: (value: string) => void) {
   return (option: { value?: string | number | null; label?: ReactNode }) => (
     <span
-      title="Click to edit partner account"
+      title={title}
       // Sits above the search input that overlays the selected value
       style={{ cursor: 'pointer', textDecoration: 'underline dotted', position: 'relative', zIndex: 2 }}
       onMouseDown={(e) => e.stopPropagation()}
@@ -110,3 +110,5 @@ export function partnerLabelRender(onEdit: (id: string) => void) {
     </span>
   )
 }
+
+export const partnerLabelRender = (onEdit: (id: string) => void) => editableLabelRender('Click to edit partner account', onEdit)

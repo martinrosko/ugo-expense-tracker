@@ -9,7 +9,7 @@ const { RangePicker } = DatePicker
 
 type Props = {
   /** The Draft plan to activate; null closes the dialog */
-  plan: { id: string; name: string | null; intervalType: string } | null
+  plan: { id: string; name: string | null; intervalType: string; startDate?: string | null; endDate?: string | null } | null
   onClose: () => void
   onActivated: () => void
 }
@@ -35,7 +35,8 @@ export default function ActivatePlanModal({ plan, onClose, onActivated }: Props)
     setMode('count')
     setCount(1)
     setUntil(null)
-    setRange([dayjs(), dayjs()])
+    // A one-time plan that already has dates keeps them
+    setRange(plan.startDate && plan.endDate ? [dayjs(plan.startDate.slice(0, 10)), dayjs(plan.endDate.slice(0, 10))] : [dayjs(), dayjs()])
   }, [plan])
 
   const canSave = oneTime
@@ -83,7 +84,6 @@ export default function ActivatePlanModal({ plan, onClose, onActivated }: Props)
           <RangePicker
             value={range}
             onChange={(v) => setRange(v)}
-            disabledDate={(d) => d.isBefore(dayjs(), 'day')}
           />
         </Space>
       ) : interval && (

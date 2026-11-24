@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Plan, Prisma } from '@prisma/client'
 import db from '../db.js'
 import { deletePlanTree } from './deletePlan.js'
+import { completePlanBudgets } from './freezeInheritedValues.js'
 
 export type RecurringInterval = 'WEEKLY' | 'MONTHLY' | 'YEARLY'
 
@@ -238,7 +239,8 @@ function parseDay(value: unknown, field: string): Date {
 /**
  * Activates a Draft plan.
  * Recurring template body: { repeatEvery, startPeriod, mode: 'count', count } | { ..., mode: 'until', until }
- * One-time plan body: { startDate, endDate }. Dates are YYYY-MM-DD and must not be in the past.
+ * One-time plan body: { startDate, endDate }. Dates are YYYY-MM-DD and may be in the past; a plan that already ended becomes Completed.
+ * Recurring dates must not be in the past.
  */
 export async function activateDraft(planId: string, ownerId: string, body: Record<string, unknown>) {
   const plan = await db.plan.findFirst({ where: { id: planId, ownerId } })
@@ -256,15 +258,17 @@ export async function activateDraft(planId: string, ownerId: string, body: Recor
 async function activateOneTime(plan: Plan, today: Date, body: Record<string, unknown>) {
   const startDate = parseDay(body.startDate, 'startDate')
   const endDate = parseDay(body.endDate, 'endDate')
-  if (startDate < today) throw new RecurrenceError(400, 'The start date cannot be in the past')
   if (endDate < startDate) throw new RecurrenceError(400, 'The end date cannot be before the start date')
-  const statusCode = startDate.getTime() === today.getTime() ? 1 : 2
+  const statusCode = endDate < today ? 3 : startDate <= today ? 1 : 2
+  // Like the status job, a completed plan keeps its budgets' and transactions' items active
+  const itemStatus = statusCode === 3 ? 1 : statusCode
 
   await db.$transaction(async (tx) => {
     // A one-time plan stops being a template: it is the plan itself and follows the status job
-    await tx.plan.update({ where: { id: plan.id }, data: { isTemplate: false, startDate, endDate, statusCode, stateCode: 0 } })
-    await tx.budget.updateMany({ where: { planId: plan.id, statusCode: 0 }, data: { statusCode } })
-    await tx.transaction.updateMany({ where: { statusCode: 0, OR: [{ planId: plan.id }, { budget: { planId: plan.id } }] }, data: { statusCode } })
+    await tx.plan.update({ where: { id: plan.id }, data: { isTemplate: false, startDate, endDate, statusCode, stateCode: statusCode === 3 ? 1 : 0 } })
+    await tx.budget.updateMany({ where: { planId: plan.id, statusCode: 0 }, data: { statusCode: itemStatus } })
+    await tx.transaction.updateMany({ where: { statusCode: 0, OR: [{ planId: plan.id }, { budget: { planId: plan.id } }] }, data: { statusCode: itemStatus } })
+    if (statusCode === 3) await completePlanBudgets(tx, [plan.id])
   })
   return { statusCode, created: 0 }
 }

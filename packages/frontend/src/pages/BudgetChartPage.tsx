@@ -18,6 +18,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import apiClient from '../api/apiClient'
 import { planLabel } from '../features/planLabel'
+import { computeOffset, getPeriod, toLocalDateStr, type PeriodMode } from '../features/period'
 import {
   ResponsiveContainer,
   LineChart,
@@ -50,41 +51,6 @@ type Transaction = {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-type PeriodMode = 'month' | 'quarter' | 'year' | 'custom' | 'all'
-
-function toLocalDateStr(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-function getPeriod(mode: Exclude<PeriodMode, 'all' | 'custom'>, offset: number): { from: Date; to: Date; label: string } {
-  const now = new Date()
-  if (mode === 'month') {
-    const base = new Date(now.getFullYear(), now.getMonth() + offset, 1)
-    const to = new Date(base.getFullYear(), base.getMonth() + 1, 0, 23, 59, 59, 999)
-    return { from: base, to, label: base.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) }
-  }
-  if (mode === 'quarter') {
-    const currentQ = Math.floor(now.getMonth() / 3)
-    const qMonth = (currentQ + offset) * 3
-    const base = new Date(now.getFullYear(), qMonth, 1)
-    const y = base.getFullYear(); const m = base.getMonth()
-    return { from: new Date(y, m, 1), to: new Date(y, m + 3, 0, 23, 59, 59, 999), label: `Q${Math.floor(m / 3) + 1} ${y}` }
-  }
-  const year = now.getFullYear() + offset
-  return { from: new Date(year, 0, 1), to: new Date(year, 11, 31, 23, 59, 59, 999), label: String(year) }
-}
-
-function computeOffset(mode: Exclude<PeriodMode, 'all' | 'custom'>, picked: Dayjs): number {
-  const now = new Date()
-  if (mode === 'month') return (picked.year() - now.getFullYear()) * 12 + (picked.month() - now.getMonth())
-  if (mode === 'quarter') {
-    const currentQ = Math.floor(now.getMonth() / 3)
-    const pickedQ = Math.floor(picked.month() / 3)
-    return (picked.year() - now.getFullYear()) * 4 + (pickedQ - currentQ)
-  }
-  return picked.year() - now.getFullYear()
-}
 
 function fmt(v: number): string {
   return (v < 0 ? '-' : '') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'

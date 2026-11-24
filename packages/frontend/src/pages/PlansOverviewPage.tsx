@@ -1,11 +1,11 @@
-﻿import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Typography,
   Space,
   Button,
   Radio,
   Collapse,
-  Progress,
+  Card,
   Tag,
   Spin,
   Alert,
@@ -26,13 +26,17 @@ import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
 import apiClient from '../api/apiClient'
-import { computePlannedOn } from '../features/helpers'
 import { planLabel } from '../features/planLabel'
+import {
+  budgetStats, planStats, sumStats, computePlannedOnLabel, inPeriod, parse, signedAmount, splitByKind, txKind,
+  type BudgetStats, type BudgetWithTx, type TxSummary,
+} from '../features/planStats'
 import ChangeRecurrenceModal from '../components/ChangeRecurrenceModal'
 import ActivatePlanModal from '../components/ActivatePlanModal'
 import RowActions, { type RowAction } from '../components/RowActions'
 import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
 import LogTransactionModal from '../components/LogTransactionModal'
+import PlanPerformance from '../components/PlanPerformance'
 import { TagsField, useTagSelection } from '../components/TagPicker'
 
 dayjs.extend(isoWeek)
@@ -40,30 +44,6 @@ dayjs.extend(isoWeek)
 const { Title, Text } = Typography
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-
-type TxSummary = {
-  id: string
-  name?: string | null
-  amount: string | null
-  plannedAmount: string | null
-  plannedOn?: string | null
-  dueDateConfig?: string | null
-  executedOn: string | null
-  type: 'TRANSACTION' | 'BALANCE'
-  templateId?: string | null
-  bankTicketId?: string | null
-  fromAccount?: { type: string } | null
-  toAccount?: { type: string } | null
-}
-
-type BudgetWithTx = {
-  id: string
-  name: string | null
-  amount: string | null
-  planId: string
-  statusCode?: number
-  transactions: TxSummary[]
-}
 
 type PlanDetailed = {
   id: string
@@ -162,63 +142,6 @@ function getPeriod(mode: PeriodKind, offset: number): { from: Date; to: Date; la
   }
 }
 
-// ─── Transaction classification ──────────────────────────────────────────────
-
-const ASSET_TYPES = new Set(['CASH', 'BANK', 'INVESTMENT'])
-
-type TxKind = 'expense' | 'income' | 'transfer'
-
-function txKind(tx: TxSummary): TxKind {
-  const from = tx.fromAccount?.type ?? ''
-  const to = tx.toAccount?.type ?? ''
-  const fromAsset = ASSET_TYPES.has(from)
-  const toAsset = ASSET_TYPES.has(to)
-  if (fromAsset && toAsset) return 'transfer'
-  if (toAsset && !fromAsset) return 'income'
-  return 'expense'
-}
-
-/** Return a signed amount: expense = negative, income = positive, transfer = 0 (ignored in totals) */
-function signedAmount(tx: TxSummary, raw: string | null): number {
-  const v = parse(raw)
-  const kind = txKind(tx)
-  if (kind === 'transfer') return 0
-  return kind === 'income' ? Math.abs(v) : -Math.abs(v)
-}
-
-// ─── Stats helpers ────────────────────────────────────────────────────────────
-
-/** Returns true if the transaction falls within [from, to] based on executedOn or plannedOn */
-function inPeriod(tx: TxSummary, from: Date, to: Date, planStartDate?: string | null): boolean {
-  const dateStr = tx.executedOn ?? tx.plannedOn ?? computePlannedOnLabel(tx.dueDateConfig, planStartDate)
-  if (!dateStr) return true // no date — include (floating/unscheduled)
-  const d = new Date(dateStr)
-  return d >= from && d <= to
-}
-
-function computePlannedOnLabel(dueDateConfig: string | null | undefined, planStartDate: string | null | undefined): string | null {
-  const d = computePlannedOn(dueDateConfig, planStartDate);
-  if (!d) return null;
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function parse(v: string | null | undefined): number {
-  return v ? parseFloat(v) || 0 : 0
-}
-
-function splitByKind(txs: TxSummary[], field: 'amount' | 'plannedAmount', opts?: { executedOnly?: boolean; unexecutedOnly?: boolean }): { inc: number; exp: number } {
-  let inc = 0, exp = 0
-  for (const t of txs) {
-    if (opts?.executedOnly && t.executedOn === null) continue
-    if (opts?.unexecutedOnly && t.executedOn !== null) continue
-    const kind = txKind(t)
-    const v = Math.abs(parse(t[field]))
-    if (kind === 'income') inc += v
-    else if (kind === 'expense') exp += v
-  }
-  return { inc, exp }
-}
-
 function fmt(v: number): string {
   return (v < 0 ? '-' : '') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
 }
@@ -227,105 +150,6 @@ function amountColor(v: number) {
   return v < 0 ? '#cf1322' : v > 0 ? '#3f8600' : undefined
 }
 
-/** Compute the overlap ratio between the viewing period and the plan's lifespan */
-function periodPortion(from: Date | undefined, to: Date | undefined, planStart: string | null | undefined, planEnd: string | null | undefined): number {
-  if (!from || !to || !planStart || !planEnd) return 1
-  const ps = new Date(planStart)
-  const pe = new Date(planEnd)
-  if (isNaN(ps.getTime()) || isNaN(pe.getTime())) return 1
-  const planDays = Math.round((pe.getTime() - ps.getTime()) / 86400000) + 1
-  if (planDays <= 0) return 1
-  // Clamp viewing window to plan bounds
-  const clampedFrom = from < ps ? ps : from
-  const clampedTo = to > pe ? pe : to
-  const overlapDays = Math.round((clampedTo.getTime() - clampedFrom.getTime()) / 86400000) + 1
-  if (overlapDays <= 0) return 0
-  return overlapDays / planDays
-}
-
-type BudgetStats = {
-  planned: number; actual: number; reserved: number
-  incPlanned: number; incActual: number; incReserved: number
-  expPlanned: number; expActual: number; expReserved: number
-}
-
-function budgetStats(b: BudgetWithTx, from?: Date, to?: Date, planStartDate?: string | null, planEndDate?: string | null, planCompleted = false): BudgetStats {
-  const allTxs = (b.transactions ?? []).filter((t) => t.type === 'TRANSACTION')
-  const txs = from && to ? allTxs.filter((t) => inPeriod(t, from, to, planStartDate)) : allTxs
-  const actual = txs.filter((t) => t.executedOn !== null).reduce((s, t) => s + signedAmount(t, t.amount), 0)
-  const txPlannedSum = txs.reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0)
-  // A completed budget keeps no envelope reservation; only its unexecuted transactions still reserve
-  const completed = planCompleted || b.statusCode === 3
-  // Budget envelope prorated to the viewing period
-  const fullEnvelope = b.amount ? -Math.abs(parse(b.amount)) : 0
-  const portion = periodPortion(from, to, planStartDate, planEndDate)
-  const budgetEnvelope = fullEnvelope * portion
-  const planned = budgetEnvelope + txPlannedSum
-  // Reserved: remaining budget capacity after unplanned actuals, prorated to the period
-  // Unplanned actuals are executed txs that have no dueDateConfig (ad-hoc spending)
-  const unplannedActual = txs
-    .filter((t) => t.executedOn !== null && !t.dueDateConfig)
-    .reduce((s, t) => s + signedAmount(t, t.amount), 0)
-  let reservation = completed ? 0 : fullEnvelope - unplannedActual // envelope minus what was already spent
-  // Clamp: can't reserve more than the envelope, can't go below 0
-  if (fullEnvelope <= 0) {
-    reservation = Math.max(fullEnvelope, Math.min(0, reservation))
-  } else {
-    reservation = Math.min(fullEnvelope, Math.max(0, reservation))
-  }
-  // Prorate the reservation to the remaining active period within the viewing window
-  if (reservation !== 0 && planStartDate && planEndDate && from && to) {
-    const today = new Date()
-    const pe = new Date(planEndDate)
-    const ps = new Date(planStartDate)
-    // Active period starts from today (or from filter.from if later)
-    const activeFrom = from > today ? from : today < ps ? ps : today
-    const activeTo = to > pe ? pe : to
-    const activeInterval = Math.round((pe.getTime() - activeFrom.getTime()) / 86400000) + 1
-    const periodInterval = Math.round((activeTo.getTime() - activeFrom.getTime()) / 86400000) + 1
-    if (activeInterval > 0 && periodInterval > 0) {
-      reservation = reservation * (periodInterval / activeInterval)
-    } else {
-      reservation = 0
-    }
-  }
-  const _actS = splitByKind(txs, 'amount', { executedOnly: true })
-  const _plnS = splitByKind(txs, 'plannedAmount')
-  // Pending transactions from a template are committed spending on top of the envelope; in a completed budget all pending ones are
-  const pendingTpl = txs.filter((t) => t.executedOn === null && (completed || t.templateId))
-  const pendingTplSigned = pendingTpl.reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0)
-  const pendingTplSplit = splitByKind(pendingTpl, 'plannedAmount')
-  return {
-    planned, actual, reserved: reservation + pendingTplSigned,
-    incPlanned: _plnS.inc, incActual: _actS.inc,
-    incReserved: (reservation > 0 ? reservation : 0) + pendingTplSplit.inc,
-    expPlanned: Math.abs(budgetEnvelope) + _plnS.exp, expActual: _actS.exp,
-    expReserved: (reservation < 0 ? Math.abs(reservation) : 0) + pendingTplSplit.exp,
-  }
-}
-
-function planStats(plan: PlanDetailed, from?: Date, to?: Date): BudgetStats {
-  const bs = (plan.budgets ?? []).map((b) => budgetStats(b, from, to, plan.startDate, plan.endDate, plan.statusCode === 3))
-  const allDirectTxs = (plan.transactions ?? []).filter((t) => t.type === 'TRANSACTION')
-  const directTxs = from && to ? allDirectTxs.filter((t) => inPeriod(t, from, to, plan.startDate)) : allDirectTxs
-  const directActual = directTxs.filter((t) => t.executedOn !== null).reduce((s, t) => s + signedAmount(t, t.amount), 0)
-  const directPlanned = directTxs.reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0)
-  const directReserved = directTxs.filter((t) => t.executedOn === null).reduce((s, t) => s + signedAmount(t, t.plannedAmount), 0)
-  const dAct = splitByKind(directTxs, 'amount', { executedOnly: true })
-  const dPln = splitByKind(directTxs, 'plannedAmount')
-  const dRes = splitByKind(directTxs, 'plannedAmount', { unexecutedOnly: true })
-  return {
-    planned: bs.reduce((s, b) => s + b.planned, 0) + directPlanned,
-    actual: bs.reduce((s, b) => s + b.actual, 0) + directActual,
-    reserved: bs.reduce((s, b) => s + b.reserved, 0) + directReserved,
-    incPlanned: bs.reduce((s, b) => s + b.incPlanned, 0) + dPln.inc,
-    expPlanned: bs.reduce((s, b) => s + b.expPlanned, 0) + dPln.exp,
-    incActual: bs.reduce((s, b) => s + b.incActual, 0) + dAct.inc,
-    expActual: bs.reduce((s, b) => s + b.expActual, 0) + dAct.exp,
-    incReserved: bs.reduce((s, b) => s + b.incReserved, 0) + dRes.inc,
-    expReserved: bs.reduce((s, b) => s + b.expReserved, 0) + dRes.exp,
-  }
-}
 
 function execProgress(stats: { planned: number; actual: number; reserved: number }): { pct: number; rawPct: number; status: 'success' | 'normal' | 'exception'; flipped: boolean } {
   if (stats.planned === 0) return { pct: 0, rawPct: 0, status: 'normal', flipped: false }
@@ -354,44 +178,6 @@ const STATUS_GROUPS = [
 ]
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
-
-/** Segmented bar: actual (solid) + reserved (medium) vs planned target */
-function SplitBar({ actual, reserved, planned, kind }: { actual: number; reserved: number; planned: number; kind: 'income' | 'expense' }) {
-  const used = actual + reserved
-  const total = Math.max(planned, used)
-  if (total === 0) return <span style={{ fontSize: 11, color: '#999' }}>—</span>
-
-  const actualPct = (actual / total) * 100
-  const reservedPct = (reserved / total) * 100
-  const plannedPct = (planned / total) * 100
-  const overAchieved = used > planned
-
-  const solid = kind === 'income' ? '#389e0d' : '#cf1322'
-  const medium = kind === 'income' ? 'rgba(82,196,26,0.40)' : 'rgba(255,77,79,0.40)'
-  const light = kind === 'income' ? 'rgba(82,196,26,0.18)' : 'rgba(255,77,79,0.18)'
-
-  const pctLabel = planned > 0 ? Math.round((used / planned) * 100) : 0
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-      <div style={{ width: 80, height: 6, borderRadius: 3, background: '#f0f0f0', position: 'relative', overflow: 'hidden' }}>
-        {/* Light fill up to planned (shows unfilled target) */}
-        {!overAchieved && (
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${plannedPct}%`, borderRadius: 3, background: light }} />
-        )}
-        {/* Reserved (actual + reserved together) */}
-        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.min(actualPct + reservedPct, 100)}%`, borderRadius: 3, background: medium }} />
-        {/* Actual (solid) */}
-        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.min(actualPct, 100)}%`, borderRadius: 3, background: solid }} />
-        {/* Planned marker when over-achieved */}
-        {overAchieved && planned > 0 && (
-          <div style={{ position: 'absolute', left: `${plannedPct}%`, top: -1, bottom: -1, width: 2, background: 'white', opacity: 0.5, borderRadius: 1 }} />
-        )}
-      </div>
-      <span style={{ fontSize: 11, minWidth: 30, textAlign: 'right' }}>{pctLabel}%</span>
-    </div>
-  )
-}
 
 function SplitAmount({ inc, exp }: { inc: number; exp: number }) {
   if (inc === 0 && exp === 0) return <span style={{ color: '#999' }}>—</span>
@@ -702,7 +488,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     </div>
   )
 }
-function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences, onLogTransaction }: { plan: PlanDetailed; stats: BudgetStats; splitView?: boolean; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void; onLogTransaction?: (plan: PlanDetailed) => void }) {
+function PlanHeader({ plan, stats, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences, onLogTransaction }: { plan: PlanDetailed; stats: BudgetStats; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void; onLogTransaction?: (plan: PlanDetailed) => void }) {
   const navigate = useNavigate()
   const dateRange = [plan.startDate, plan.endDate]
     .map((d) => (d ? new Date(d).toLocaleDateString('sk-SK') : ''))
@@ -710,7 +496,6 @@ function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onA
     .join(' – ')
 
   const scheduled = plan.statusCode === 2
-  const ep = execProgress(stats)
   const recurring = !!plan.templateIntervalType && plan.templateIntervalType !== 'ONE_TIME'
 
   const actions: RowAction[] = [
@@ -763,71 +548,12 @@ function PlanHeader({ plan, stats, splitView, onDiscard, onChangeRecurrence, onA
             </Text>
           )}
         </div>
+        {!scheduled && <PlanPerformance stats={stats} size="mini" title={planLabel(plan)} />}
         <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
         <RowActions actions={actions} />
       </div>
-      {/* Summary row: actual / reserved / planned + bar */}
-      {splitView ? (
-        <div style={{ marginTop: 4 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-            <Text style={{ fontSize: 12, color: '#3f8600', minWidth: 10 }}>↑</Text>
-            {!scheduled && (
-              <>
-                <Text style={{ fontSize: 12, color: '#3f8600' }}>{fmt(stats.incActual)}</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>actual</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>·</Text>
-                <Text style={{ fontSize: 12, color: '#3f8600' }}>{fmt(stats.incReserved)}</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>reserved</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>·</Text>
-              </>
-            )}
-            <Text style={{ fontSize: 12, color: '#3f8600' }}>{fmt(stats.incPlanned)}</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
-            {!scheduled && <SplitBar actual={stats.incActual} reserved={stats.incReserved} planned={stats.incPlanned} kind="income" />}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-            <Text style={{ fontSize: 12, color: '#cf1322', minWidth: 10 }}>↓</Text>
-            {!scheduled && (
-              <>
-                <Text style={{ fontSize: 12, color: '#cf1322' }}>{fmt(-stats.expActual)}</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>actual</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>·</Text>
-                <Text style={{ fontSize: 12, color: '#cf1322' }}>{fmt(-stats.expReserved)}</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>reserved</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>·</Text>
-              </>
-            )}
-            <Text style={{ fontSize: 12, color: '#cf1322' }}>{fmt(-stats.expPlanned)}</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
-            {!scheduled && <SplitBar actual={stats.expActual} reserved={stats.expReserved} planned={stats.expPlanned} kind="expense" />}
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 12 }}>
-          {!scheduled && (
-            <>
-              <Text style={{ fontSize: 12, color: amountColor(stats.actual) }}>{fmt(stats.actual)}</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>actual</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>·</Text>
-              <Text style={{ fontSize: 12, color: amountColor(stats.reserved) }}>{fmt(stats.reserved)}</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>reserved</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>·</Text>
-            </>
-          )}
-          <Text style={{ fontSize: 12, color: amountColor(stats.planned) }}>{fmt(stats.planned)}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>planned</Text>
-          {!scheduled && (
-            <>
-              <div style={{ width: 80, flexShrink: 0 }}>
-                <Progress percent={ep.pct} size="small" status={ep.status} showInfo={false} style={{ margin: 0 }} />
-              </div>
-              {ep.flipped
-                ? <span style={{ fontSize: 11, color: '#3f8600' }}>↑ {fmt(stats.actual)}</span>
-                : <span style={{ fontSize: 11 }}>{ep.rawPct}%</span>
-              }
-            </>
-          )}
-        </div>
+      {scheduled && (
+        <div style={{ marginTop: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>planned {fmt(stats.planned)}</Text></div>
       )}
     </div>
   )
@@ -1068,7 +794,7 @@ export default function PlansOverviewPage() {
     const stats = planStats(plan, from, to)
     return {
       key: plan.id,
-      label: <PlanHeader plan={plan} stats={stats} splitView={splitView} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} onLogTransaction={(p) => setLogTarget({ planId: p.id })} />,
+      label: <PlanHeader plan={plan} stats={stats} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} onLogTransaction={(p) => setLogTarget({ planId: p.id })} />,
       children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} onLogTransaction={(planId, budgetId) => setLogTarget({ planId, budgetId })} />,
     }
   }), [period, splitView, discardPlan, txActions])
@@ -1078,6 +804,14 @@ export default function PlansOverviewPage() {
     () => mode === 'active' ? plans.map((p) => p.id) : [],
     [mode, plans]
   )
+
+  // Scheduled, draft and cancelled plans have nothing executed, so they stay out of the totals
+  const totals = useMemo(() => {
+    if (mode === 'templates') return null
+    const executed = plans.filter((p) => p.statusCode === 1 || p.statusCode === 3)
+    if (executed.length === 0) return null
+    return { count: executed.length, stats: sumStats(executed.map((p) => planStats(p, period?.from, period?.to))) }
+  }, [mode, plans, period])
 
   return (
     <Space orientation="vertical" style={{ width: '100%' }} size="large">
@@ -1202,6 +936,12 @@ export default function PlansOverviewPage() {
           </Space>
         </Col>
       </Row>
+
+      {!loading && !error && totals && (
+        <Card size="small" style={{ maxWidth: 640 }}>
+          <PlanPerformance title={`Total · ${totals.count} plan${totals.count === 1 ? '' : 's'}`} stats={totals.stats} />
+        </Card>
+      )}
 
       {loading && (
         <div style={{ textAlign: 'center', padding: 48 }}>

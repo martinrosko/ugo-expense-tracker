@@ -2,7 +2,7 @@ import Papa from 'papaparse'
 import type { CsvRow } from './types'
 
 // ─── VÚB Banka Slovakia CSV export (Windows-1250 encoded) ───────────────────
-const COLUMN_MAP: Record<keyof CsvRow, string> = {
+const COLUMN_MAP: Record<Exclude<keyof CsvRow, 'ticketDbId'>, string> = {
   executedon:           'Dátum realizácie',
   amount:               'Suma',
   partnername:          'Doplňujúce informácie',  // primary merchant name

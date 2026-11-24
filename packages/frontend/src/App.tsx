@@ -10,6 +10,7 @@ import PlanDetailPage from './pages/PlanDetailPage'
 import TransactionsPage from './pages/TransactionsPage'
 import PartnerBalancePage from './pages/PartnerBalancePage'
 import BudgetChartPage from './pages/BudgetChartPage'
+import ExecutionChartPage from './pages/ExecutionChartPage'
 import AccountBalancePage from './pages/AccountBalancePage'
 import SettingsTagsPage from './pages/SettingsTagsPage'
 import SettingsPartnersPage from './pages/SettingsPartnersPage'
@@ -29,6 +30,7 @@ export default function App() {
                 <Route path="/transactions" element={<TransactionsPage />} />
                 <Route path="/partners" element={<PartnerBalancePage />} />
                 <Route path="/budget-chart" element={<BudgetChartPage />} />
+                <Route path="/execution-chart" element={<ExecutionChartPage />} />
                 <Route path="/account-balance" element={<AccountBalancePage />} />
                 <Route path="/upload" element={<Navigate to="/review" replace />} />
                 <Route path="/review" element={<ReviewPage />} />
