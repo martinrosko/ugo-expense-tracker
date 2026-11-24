@@ -9,21 +9,27 @@ const PLAN_TOLERANCE_DAYS = 10
 
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 
-/** Returns null when the transaction cannot be the counterpart of the row (opposite direction). */
-function scoreTxVsRow(row: CsvRow, tx: Tx): number | null {
+/** Returns null when the transaction cannot be the counterpart of the row (opposite direction, or another known partner). */
+function scoreTxVsRow(row: CsvRow, tx: Tx, rowPartner: AccountRef | undefined): number | null {
   const dir = direction(tx.from, tx.to)
   const rowDir = row.amount < 0 ? -1 : 1
   if (dir !== 0 && dir !== rowDir) return null
 
+  const partner = [tx.to, tx.from].find((a) => a?.type === 'PAYMENT_PARTNER')
+  const similarity = partner ? stringSimilarity(`${row.partnername} ${row.reference}`, partner.name) : 0
+  const partnerFits = similarity >= 0.5
+  // The row clearly names another partner than the planned transaction has
+  if (partner && rowPartner && rowPartner.id !== partner.id && !partnerFits) return null
+
   let score = 0
 
-  // Amount match — weight 0.5
+  // Amount match — weight 0.5; prices drift, so a near miss only counts in full when the partner fits
   const txAmount = (tx.executedOn ? tx.amount : tx.plannedAmount) ?? tx.plannedAmount ?? 0
   if (txAmount !== 0 && row.amount !== 0) {
     const ratio = Math.abs(Math.abs(row.amount) - Math.abs(txAmount)) / Math.abs(txAmount)
-    if (ratio < 0.01) score += 0.5
-    else if (ratio < 0.05) score += 0.3
-    else if (ratio < 0.15) score += 0.1
+    if (ratio < 0.005) score += 0.5
+    else if (ratio < 0.05) score += partnerFits ? 0.35 : 0.15
+    else if (ratio < 0.15) score += partnerFits ? 0.1 : 0
   }
 
   // Date proximity — weight 0.3
@@ -36,10 +42,7 @@ function scoreTxVsRow(row: CsvRow, tx: Tx): number | null {
   }
 
   // Partner name match — weight 0.2
-  if (row.partnername) {
-    const partner = [tx.to, tx.from].find((a) => a?.type === 'PAYMENT_PARTNER')
-    if (partner) score += 0.2 * stringSimilarity(row.partnername, partner.name)
-  }
+  score += 0.2 * similarity
 
   return score
 }
@@ -58,12 +61,13 @@ export function matchAll(
 ): MatchResult[] {
   // Best pairs first, so every planned transaction is matched to at most one row
   const targetByKey = new Map(targets.map((t) => [t.key, t]))
+  const rowPartners = csvRows.map((row) => findPartner(`${row.partnername} ${row.reference}`, partners))
   const pairs = csvRows.flatMap((row, rowIndex) =>
     duplicates.has(rowIndex) ? [] : candidates.flatMap((tx) => {
       const target = targetByKey.get(targetKey(tx.planId, tx.budgetId))
       const distance = target ? targetDistance(target, row.executedon) : 0
       if (Number.isFinite(distance) && distance > PLAN_TOLERANCE_DAYS) return []
-      const score = scoreTxVsRow(row, tx)
+      const score = scoreTxVsRow(row, tx, rowPartners[rowIndex])
       return score === null ? [] : [{ rowIndex, tx, score }]
     }),
   ).sort((a, b) => b.score - a.score)

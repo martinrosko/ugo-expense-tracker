@@ -27,14 +27,19 @@ export const tagRules: TagRule[] = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Lowercase words only: no accents, no bank symbols ("/VS…/SS…"), "+" read as "plus". */
+const nameWords = (s: string) =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\/\S*/g, ' ').replace(/\+/g, ' plus ').replace(/[^a-z0-9]+/g, ' ').trim()
+
 /** Simple similarity: 1 if b is a substring of a (or vice-versa), else token overlap. */
 export function stringSimilarity(a: string, b: string): number {
-  const la = a.toLowerCase()
-  const lb = b.toLowerCase()
+  const la = nameWords(a)
+  const lb = nameWords(b)
   if (!la || !lb) return 0
-  if (la.includes(lb) || lb.includes(la)) return 1
-  const tokensA = la.split(/\s+/)
-  const tokensB = new Set(lb.split(/\s+/))
+  // Very short names would be found inside almost any text
+  if (Math.min(la.length, lb.length) >= 3 && (la.includes(lb) || lb.includes(la))) return 1
+  const tokensA = la.split(' ')
+  const tokensB = new Set(lb.split(' '))
   const overlap = tokensA.filter((t) => tokensB.has(t)).length
   return overlap / Math.max(tokensA.length, tokensB.size)
 }

@@ -45,6 +45,10 @@ interface EditableRow extends MatchResult {
   markProcessed?: boolean
   /** Submitted in this session; the row stays as an already imported one */
   submitted?: boolean
+  /** Found by the counterpart check; applied when the row is submitted */
+  counterpart?: { ticketId: string; accountId: string; account: string; executedOn: string; linked: boolean }
+  /** Movement this ticket is the second side of, when its counterpart is already linked to it */
+  pairTxId?: string
 }
 
 const fmtDate = (d: Date | null) => (d ? d.toLocaleDateString('sk-SK') : 'no date')
@@ -123,26 +127,68 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)))
   }
 
+  /** Looks for the other side of a movement and prepares the row for it; nothing is saved before the row is submitted. */
   async function checkCounterpart(row: EditableRow) {
+    // A second click cancels the preparation
+    if (row.counterpart) {
+      updateRow(row.key, { counterpart: undefined, pairTxId: undefined, ...(row.counterpart.linked ? { markProcessed: false } : {}) })
+      return
+    }
     setCheckingKey(row.key)
     try {
-      const res = await apiClient.post<{ status: 'none' | 'counterpartProcessed' | 'markedAsDuplicate' | 'alreadyProcessed'; counterpart?: { account: string; executedOn: string } }>(
-        `/api/bank-tickets/${row.csvRow.ticketDbId}/check-counterpart`,
-      )
+      const res = await apiClient.post<{
+        status: 'none' | 'counterpartOpen' | 'counterpartLinked' | 'alreadyProcessed'
+        counterpart?: { id: string; accountId: string; account: string; executedOn: string }
+        pairTransactionId?: string | null
+      }>(`/api/bank-tickets/${row.csvRow.ticketDbId}/check-counterpart`)
       const { status, counterpart } = res.data
       const where = counterpart ? `${counterpart.account}, ${counterpart.executedOn}` : ''
-      if (status === 'none') message.info('No counterpart found in your other accounts (opposite amount, within 5 days).')
-      else if (status === 'alreadyProcessed') message.info(`The counterpart (${where}) and this ticket are already processed.`)
-      else if (status === 'counterpartProcessed') message.success(`Counterpart in ${where} marked as processed.`)
-      else {
-        message.success(`The counterpart in ${where} is already linked, so this ticket was marked as processed.`)
-        updateRow(row.key, { isDuplicate: true, paired: true, selected: false, matched: undefined, target: undefined, ticketDbId: row.csvRow.ticketDbId })
+      if (status === 'none' || !counterpart) {
+        message.info('No counterpart found in your other accounts (opposite amount, within 5 days).')
+      } else if (status === 'alreadyProcessed') {
+        message.info(`The counterpart (${where}) and this ticket are already processed.`)
+      } else if (status === 'counterpartLinked') {
+        // The movement is already booked from the other side: this ticket is only stored as processed
+        updateRow(row.key, {
+          counterpart: { ticketId: counterpart.id, accountId: counterpart.accountId, account: counterpart.account, executedOn: counterpart.executedOn, linked: true },
+          markProcessed: true, matched: undefined, pairTxId: res.data.pairTransactionId ?? undefined, selected: true,
+        })
+        message.success(`The counterpart in ${where} is already linked. This ticket will be marked as processed when you submit.`)
+      } else {
+        const patch: Partial<EditableRow> = {
+          counterpart: { ticketId: counterpart.id, accountId: counterpart.accountId, account: counterpart.account, executedOn: counterpart.executedOn, linked: false },
+          selected: true,
+        }
+        // Unless the planned transaction already is a movement, the booking becomes the movement between the two accounts
+        const own = (a: AccountRef | null) => !!a && a.type !== 'PAYMENT_PARTNER'
+        const becomesMovement = !row.markProcessed && !(row.matched && own(row.matched.from) && own(row.matched.to))
+        if (becomesMovement) {
+          const outgoing = row.csvRow.amount < 0
+          patch.details = {
+            name: row.details?.name ?? null,
+            amount: row.details?.amount ?? null,
+            fromAccountId: outgoing ? state.accountId : counterpart.accountId,
+            toAccountId: outgoing ? counterpart.accountId : state.accountId,
+            executedOn: row.details?.executedOn ?? defaultExecutedOn(row),
+          }
+        }
+        updateRow(row.key, patch)
+        message.success(`Counterpart found in ${where}. On submit it is marked as processed${becomesMovement ? ' and this row becomes a movement' : ''}.`)
       }
     } catch (err) {
       message.error(apiError(err, 'Failed to check for a counterpart'))
     } finally {
       setCheckingKey(null)
     }
+  }
+
+  /** Applies a prepared counterpart: it is paired with the movement booked from this side, or just marked processed. */
+  async function settleCounterpart(row: EditableRow, txId: string | null, acc: { from: string | null; to: string | null } | null) {
+    const cp = row.counterpart
+    if (!cp || cp.linked) return
+    const own = (id: string | null) => !!id && allAccounts.some((a) => a.id === id && a.type !== 'PAYMENT_PARTNER')
+    const movement = !!txId && !!acc && own(acc.from) && own(acc.to)
+    await apiClient.post('/api/bank-tickets', { id: cp.ticketId, accountId: cp.accountId, ...(movement ? { pairedTransactionId: txId } : { processed: true }) })
   }
 
   async function unmarkProcessed(row: EditableRow) {
@@ -339,11 +385,12 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
           variableSymbol: csv.variablesymbol,
           constantSymbol: csv.constantsymbol,
           specificSymbol: csv.specificsymbol,
-          pairedTransactionId: row.matched?.pairOnly ? row.matched.id : undefined,
+          pairedTransactionId: row.matched?.pairOnly ? row.matched.id : row.pairTxId,
           processed: row.markProcessed || undefined,
         })
         const bankTicketId = ticketRes.data[0].id
         if (row.matched?.pairOnly || row.markProcessed) {
+          await settleCounterpart(row, null, null)
           done.set(row.key, bankTicketId)
           continue
         }
@@ -351,10 +398,12 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
         const amount = row.details?.amount ?? Math.abs(csv.amount)
         const tagIds = row.tags.map((t) => t.id)
         const acc = rowAccounts(row)
+        let txId: string
 
         if (row.matched) {
           const m = row.matched
           const id = m.id
+          txId = id
           if (m.executedOn) {
             // Already logged by hand: only link the bank ticket, keeping its date and amount unless edited in the dialog
             await apiClient.patch(`/api/transactions/${id}`, {
@@ -385,7 +434,7 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
           }
         } else {
           const target = row.target!
-          await apiClient.post('/api/transactions', {
+          const created = await apiClient.post<{ id: string }>('/api/transactions', {
             name: row.details?.name ?? (csv.partnername || csv.reference || 'Imported'),
             amount,
             executedOn,
@@ -399,7 +448,9 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
             statusCode: target.completed ? 3 : 1,
             stateCode: target.completed ? 1 : 0,
           })
+          txId = created.data.id
         }
+        await settleCounterpart(row, txId, acc)
         done.set(row.key, bankTicketId)
       } catch (err) {
         message.error(`Row ${row.rowIndex + 1} failed: ${apiError(err, 'unknown error')}. Continuing with remaining rows.`)
@@ -614,7 +665,7 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
               // Clearing a wrong match falls back to the movement the row looks like the other side of
               if (!matched && row.pairSuggestion && row.matched?.id !== row.pairSuggestion.id && !row.markProcessed) matched = row.pairSuggestion
               const target = matched ? targets.find((t) => t.key === targetKey(matched.planId, matched.budgetId)) : row.target
-              updateRow(row.key, { matched, target, markProcessed: false })
+              updateRow(row.key, { matched, target, markProcessed: false, counterpart: row.counterpart?.linked ? undefined : row.counterpart, pairTxId: undefined })
             }}
           />
         )
@@ -679,9 +730,10 @@ function ReviewTable({ state: initialState, onDone, onDiscard }: { state: Analys
               onClick={() => setDetailsKey(row.key)}
             />
           </Tooltip>
-          <Tooltip title="Look for the other side of a movement in your other accounts (opposite amount, within 5 days)">
+          <Tooltip title={row.counterpart ? `Prepared with the counterpart in ${row.counterpart.account} (${row.counterpart.executedOn}); applied on submit. Click to cancel.` : 'Look for the other side of a movement in your other accounts (opposite amount, within 5 days)'}>
             <Button
               size="small"
+              type={row.counterpart ? 'primary' : 'default'}
               icon={<SwapOutlined />}
               loading={checkingKey === row.key}
               disabled={row.isDuplicate || !row.csvRow.ticketDbId}

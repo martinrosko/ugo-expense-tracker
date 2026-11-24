@@ -305,7 +305,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
   function handleDirectionChange(newDir: Direction) {
     const fromId = form.getFieldValue('fromAccountId') as string | undefined
     const toId = form.getFieldValue('toAccountId') as string | undefined
-    // Swap accounts when toggling income â†” expense
+    // Swap accounts when toggling income ↔ expense
     if ((direction === 'expense' && newDir === 'income') || (direction === 'income' && newDir === 'expense')) {
       form.setFieldsValue({ fromAccountId: toId, toAccountId: fromId })
     } else {
@@ -393,7 +393,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
             label="Amount"
             rules={execute ? [{ required: true, type: 'number', min: 0.01, message: 'Enter a positive amount' }] : []}
           >
-            <InputNumber style={{ width: '100%' }} precision={2} suffix="â‚¬" placeholder="0.00" />
+            <InputNumber style={{ width: '100%' }} precision={2} suffix="€" placeholder="0.00" />
           </Form.Item>
           {execute && (
             <Form.Item name="executedOn" label="Executed on" rules={[{ required: true }]}>
@@ -401,14 +401,14 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
             </Form.Item>
           )}
           <Form.Item name="note" label="Note">
-            <Input allowClear placeholder="Descriptionâ€¦" />
+            <Input allowClear placeholder="Description…" />
           </Form.Item>
           <Form.Item name="fromAccountId" label={fromLabel} rules={fromRules}>
             <Select
               allowClear
               showSearch={direction === 'income'}
               optionFilterProp="label"
-              placeholder={`Select ${fromLabel.toLowerCase()}â€¦`}
+              placeholder={`Select ${fromLabel.toLowerCase()}…`}
               options={fromOptions.map((a) => ({ value: a.id, label: a.name }))}
               popupRender={direction === 'income' ? newPartnerDropdown('fromAccountId') : undefined}
               labelRender={direction === 'income' ? partnerLabelRender(setEditPartnerId) : undefined}
@@ -419,7 +419,7 @@ export default function TransactionModal({ open, tx, accounts, planIntervalType,
               allowClear
               showSearch={direction === 'expense'}
               optionFilterProp="label"
-              placeholder={`Select ${toLabel.toLowerCase()}â€¦`}
+              placeholder={`Select ${toLabel.toLowerCase()}…`}
               options={toOptions.map((a) => ({ value: a.id, label: a.name }))}
               popupRender={direction === 'expense' ? newPartnerDropdown('toAccountId') : undefined}
               labelRender={direction === 'expense' ? partnerLabelRender(setEditPartnerId) : undefined}

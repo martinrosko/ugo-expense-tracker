@@ -141,7 +141,7 @@ export default function RescoTestPage() {
       })
       const rescoIdToName = new Map(rescoAccounts.map((a) => [a.id, a.name]))
 
-      // 3. Build backend account name â†’ backend id map
+      // 3. Build backend account name → backend id map
       const backendAccountsRes = await apiClient.get<{ id: string; name: string }[]>('/api/accounts')
       const nameToBackendId = new Map(backendAccountsRes.data.map((a) => [a.name, a.id]))
 
@@ -208,7 +208,7 @@ export default function RescoTestPage() {
       const existingRes = await apiClient.get<{ id: string }[]>('/api/budgets')
       const existingIds = new Set(existingRes.data.map((b) => b.id))
 
-      // 3. Get all plan IDs in backend â€” budgets whose plan wasn't imported must be skipped
+      // 3. Get all plan IDs in backend — budgets whose plan wasn't imported must be skipped
       const plansRes = await apiClient.get<{ id: string }[]>('/api/plans')
       const backendPlanIds = new Set(plansRes.data.map((p) => p.id))
 
@@ -440,10 +440,10 @@ export default function RescoTestPage() {
         <ApiOutlined style={{ fontSize: 24 }} />
         <div>
           <Title level={3} style={{ margin: 0 }}>
-            Resco OData â€” Entity Test
+            Resco OData — Entity Test
           </Title>
           <Text type="secondary">
-            org: <Text code>rohelbb</Text> Â· base:{' '}
+            org: <Text code>rohelbb</Text> · base:{' '}
             <Text code>https://rohelbb.rescocrm.com/odata/v4/</Text>
           </Text>
         </div>
@@ -544,7 +544,7 @@ export default function RescoTestPage() {
           >
             {name === 'rw_account' && importStates['rw_account']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin description="Fetching from Resco and saving to Ugoâ€¦" />
+                <Spin description="Fetching from Resco and saving to Ugo…" />
               </div>
             )}
             {name === 'rw_account' && !importStates['rw_account']?.importing && importStates['rw_account']?.result && (
@@ -559,7 +559,7 @@ export default function RescoTestPage() {
             )}
             {name === 'rw_plan' && importStates['rw_plan']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin description="Fetching plans from Resco, resolving accounts, saving to Ugoâ€¦" />
+                <Spin description="Fetching plans from Resco, resolving accounts, saving to Ugo…" />
               </div>
             )}
             {name === 'rw_plan' && !importStates['rw_plan']?.importing && importStates['rw_plan']?.result && (
@@ -574,7 +574,7 @@ export default function RescoTestPage() {
             )}
             {name === 'rw_budget' && importStates['rw_budget']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin description="Fetching budgets from Resco, saving to Ugoâ€¦" />
+                <Spin description="Fetching budgets from Resco, saving to Ugo…" />
               </div>
             )}
             {name === 'rw_budget' && !importStates['rw_budget']?.importing && importStates['rw_budget']?.result && (
@@ -589,7 +589,7 @@ export default function RescoTestPage() {
             )}
             {name === 'rw_transaction' && importStates['rw_transaction']?.importing && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin description="Fetching transactions from Resco, saving to Ugoâ€¦" />
+                <Spin description="Fetching transactions from Resco, saving to Ugo…" />
               </div>
             )}
             {name === 'rw_transaction' && !importStates['rw_transaction']?.importing && importStates['rw_transaction']?.result && (
@@ -634,7 +634,7 @@ export default function RescoTestPage() {
             )}
             {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && name !== 'rw_tag' && name !== 'rw_tagobject' && state.loading && (
               <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <Spin description="Fetching from Rescoâ€¦" />
+                <Spin description="Fetching from Resco…" />
               </div>
             )}
             {name !== 'rw_account' && name !== 'rw_plan' && name !== 'rw_budget' && name !== 'rw_transaction' && name !== 'rw_tag' && name !== 'rw_tagobject' && state.error && (

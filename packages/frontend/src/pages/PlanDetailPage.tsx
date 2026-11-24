@@ -50,6 +50,7 @@ export default function PlanDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [logOpen, setLogOpen] = useState(false)
+  const [pageSize, setPageSize] = useState(20)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -190,7 +191,7 @@ export default function PlanDetailPage() {
       <div>
         <Title level={5}>Executed transactions</Title>
         <Table<Tx>
-          size="small" rowKey="id" pagination={{ pageSize: 20, hideOnSinglePage: true }} dataSource={executed}
+          size="small" rowKey="id" pagination={{ pageSize, showSizeChanger: true, onChange: (_page, size) => setPageSize(size), hideOnSinglePage: true }} dataSource={executed}
           locale={{ emptyText: 'No executed transactions' }}
           onRow={(t) => ({ onClick: () => void rowClickAction(actionsFor(txContext(t)), true)?.onClick(), style: { cursor: 'pointer' } })}
           columns={[

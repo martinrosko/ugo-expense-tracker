@@ -202,8 +202,8 @@ bankTicketsRouter.post('/:id/unpair', async (req: AuthenticatedRequest, res) => 
 })
 
 // POST /api/bank-tickets/:id/check-counterpart
-// Looks in the user's other accounts for the opposite ticket of a movement (opposite amount, within 5 days) and settles one side:
-// an open counterpart is marked processed, and when the counterpart is already linked this ticket becomes its duplicate.
+// Looks in the user's other accounts for the opposite ticket of a movement (opposite amount, within 5 days). Changes nothing:
+// the caller decides what to do with the counterpart and applies it when the user submits.
 bankTicketsRouter.post('/:id/check-counterpart', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const ownerId = req.user!.sub
@@ -231,24 +231,18 @@ bankTicketsRouter.post('/:id/check-counterpart', async (req: AuthenticatedReques
 
   const ASSETS = ['CASH', 'BANK', 'INVESTMENT']
   const isDone = (t: { stateCode: number; transaction: unknown; pairedTransaction: unknown }) => !!t.transaction || !!t.pairedTransaction || t.stateCode === 1
-  // A movement between own accounts is what the other side can be paired with; anything else is only marked processed
-  const settle = (done: { transaction: typeof ticket.transaction; pairedTransaction: typeof ticket.pairedTransaction }) => {
-    const tx = done.transaction ?? done.pairedTransaction
-    const movement = tx && ASSETS.includes(tx.fromAccount?.type ?? '') && ASSETS.includes(tx.toAccount?.type ?? '')
-    return movement ? { pairedTransactionId: tx.id } : { stateCode: 1 }
+  // Only a movement between own accounts can be paired with; for anything else the ticket is just marked processed
+  const movementOf = (t: { transaction: typeof ticket.transaction; pairedTransaction: typeof ticket.pairedTransaction }) => {
+    const tx = t.transaction ?? t.pairedTransaction
+    return tx && ASSETS.includes(tx.fromAccount?.type ?? '') && ASSETS.includes(tx.toAccount?.type ?? '') ? tx.id : null
   }
-  const info = { id: counterpart.id, account: counterpart.account.name, executedOn: counterpart.executedOn.toISOString().slice(0, 10) }
+  const info = { id: counterpart.id, accountId: counterpart.accountId, account: counterpart.account.name, executedOn: counterpart.executedOn.toISOString().slice(0, 10) }
 
   const ticketDone = isDone(ticket)
   const counterpartDone = isDone(counterpart)
   if (ticketDone && counterpartDone) { res.json({ status: 'alreadyProcessed', counterpart: info }); return }
-  if (counterpartDone) {
-    await db.bankTicket.update({ where: { id }, data: settle(counterpart) })
-    res.json({ status: 'markedAsDuplicate', counterpart: info })
-    return
-  }
-  await db.bankTicket.update({ where: { id: counterpart.id }, data: ticketDone ? settle(ticket) : { stateCode: 1 } })
-  res.json({ status: 'counterpartProcessed', counterpart: info })
+  if (counterpartDone) { res.json({ status: 'counterpartLinked', counterpart: info, pairTransactionId: movementOf(counterpart) }); return }
+  res.json({ status: 'counterpartOpen', counterpart: info })
 })
 
 // DELETE /api/bank-tickets/:id
