@@ -18,7 +18,7 @@ const NAV_ITEMS = [
   { key: '/execution-chart', label: 'Plan Execution', icon: <LineChartOutlined /> },
   { key: '/account-balance', label: 'Account Balance', icon: <AreaChartOutlined /> },
   { key: '/review', label: 'Upload & Review', icon: <CheckSquareOutlined /> },
-  { key: '/resco-test', label: 'Resco Test', icon: <ApiOutlined /> },
+  ...(import.meta.env.DEV ? [{ key: '/resco-test', label: 'Resco Test', icon: <ApiOutlined /> }] : []),
   {
     key: '/settings',
     label: 'Settings',

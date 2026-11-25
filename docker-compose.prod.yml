@@ -1,0 +1,133 @@
+name: ugo-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ugo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ugo
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD in .env.prod}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init-prod.sh:/docker-entrypoint-initdb.d/init-prod.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ugo -d ugo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  keycloak:
+    build: ./keycloak
+    restart: unless-stopped
+    command: start --optimized --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HOSTNAME: https://${AUTH_HOST:?set AUTH_HOST in .env.prod}
+      # The admin console is reachable only on the host (port 8081, away from the dev Keycloak), never through the proxy
+      KC_HOSTNAME_ADMIN: http://localhost:8081
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD in .env.prod}
+      # Substituted into realm-prod.json on import
+      APP_URL: https://${APP_HOST}
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./keycloak/realm-prod.json:/opt/keycloak/data/import/realm-prod.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl; ask the management port over a plain TCP socket
+      test:
+        - CMD
+        - bash
+        - -c
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '"status": "UP"' <&3
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    logging: *logging
+
+  backend:
+    build: ./packages/backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://ugo:${POSTGRES_PASSWORD}@postgres:5432/ugo
+      # Tokens carry the public issuer; the keys come over the internal network
+      KEYCLOAK_ISSUER: https://${AUTH_HOST}/realms/ugo
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/ugo/protocol/openid-connect/certs
+      CORS_ORIGIN: https://${APP_HOST}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging: *logging
+
+  mcp:
+    build: ./packages/mcp
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      BACKEND_URL: http://backend:3000
+      KEYCLOAK_ISSUER: https://${AUTH_HOST}/realms/ugo
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/ugo/protocol/openid-connect/certs
+      MCP_PUBLIC_URL: https://${MCP_HOST}
+    depends_on:
+      - backend
+    logging: *logging
+
+  web:
+    build:
+      context: ./packages/frontend
+      args:
+        VITE_KEYCLOAK_URL: https://${AUTH_HOST}
+    restart: unless-stopped
+    environment:
+      APP_HOST: ${APP_HOST}
+      AUTH_HOST: ${AUTH_HOST}
+      MCP_HOST: ${MCP_HOST}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env.prod}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - keycloak
+      - mcp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

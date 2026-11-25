@@ -20,6 +20,11 @@
     "docker:down": "docker compose down",
     "start:all": "npm run docker:up:dev && concurrently -k -n backend,frontend -c blue,green \"npm:backend:dev\" \"npm:dev\"",
     "docker:build": "docker compose build",
+    "prod:up": "docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build",
+    "prod:down": "docker compose -f docker-compose.prod.yml --env-file .env.prod down",
+    "prod:ps": "docker compose -f docker-compose.prod.yml --env-file .env.prod ps",
+    "prod:logs": "docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f --tail 100",
+    "prod:db:backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db-backup.ps1 -Prod",
     "db:backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db-backup.ps1",
     "db:restore": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/db-restore.ps1"
   },

@@ -12,6 +12,7 @@ node_modules
 # Local env — never commit credentials
 .env.local
 .env
+.env.prod
 dist
 dist-ssr
 *.local

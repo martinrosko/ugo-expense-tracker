@@ -1,0 +1,45 @@
+{
+	email {$ACME_EMAIL}
+	acme_ca {$ACME_CA}
+}
+
+{$APP_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	handle /api/* {
+		reverse_proxy backend:3000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+{$AUTH_HOST} {
+	# The master realm and the admin console stay off the internet; use http://localhost:8080 on the host
+	@private path /realms/master /realms/master/* /admin /admin/*
+	handle @private {
+		respond "Not found" 404
+	}
+
+	@public path /realms/* /resources/*
+	handle @public {
+		reverse_proxy keycloak:8080
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}
+
+{$MCP_HOST} {
+	reverse_proxy mcp:3001
+}

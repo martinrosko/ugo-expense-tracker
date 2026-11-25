@@ -1,0 +1,6 @@
+node_modules
+dist
+# Local env files hold credentials that Vite would bake into the public bundle
+.env*
+!.env.example
+Dockerfile

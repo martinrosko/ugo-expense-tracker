@@ -146,8 +146,6 @@ function buildChartData(
     const execDeltas = new Map<string, number>()
     const planDeltas = new Map<string, number>()
 
-    const planend = txs.filter(tx => tx.executedOn === null && (tx.plannedOn !== null || tx.dueDateConfig !== null));
-
     for (const tx of txs) {
       const amt = parseFloat(tx.amount ?? '0') || 0
       // Determine signed delta relative to this account

@@ -227,6 +227,21 @@ It opens the Keycloak login in the browser and prints `UGO_REFRESH_TOKEN=...` on
 
 **Production**: remote clients need HTTPS and a public hostname. Put `mcp`, `backend` and Keycloak behind a reverse proxy, run Keycloak with a fixed `KC_HOSTNAME` instead of the dev settings in `docker-compose.yml`, and set `KEYCLOAK_ISSUER` and `MCP_PUBLIC_URL` (compose reads both from the environment or a `.env` file) to the public URLs.
 
+## Production stack (`docker-compose.prod.yml`)
+
+One compose project (`ugo-prod`, separate from the dev stack) serves everything on `https://<APP_HOST>`, `https://<AUTH_HOST>` and `https://<MCP_HOST>`. Caddy (`web` service) gets Let's Encrypt certificates, serves the frontend, proxies `/api` to the backend and only lets `/realms/*` and `/resources/*` of Keycloak through. Only ports 80 and 443 are published.
+
+Setup:
+1. Copy `.env.prod.example` to `.env.prod` and fill in hostnames, email and passwords (letters and digits only).
+2. DNS: A records for the three hostnames to the machine's public IP; forward TCP 80 and 443 to the machine.
+3. `npm run prod:up` builds and starts everything (`prod:ps`, `prod:logs`, `prod:down`, `prod:db:backup` are the companions).
+4. The Keycloak admin console is only on the host: `http://localhost:8081`, user from `KEYCLOAK_ADMIN_USER`. Registration is off, so create users there. On a fresh database also set the `master` realm's *Frontend URL* to `http://localhost:8081` (Realm settings, General, Advanced); otherwise the console is sent to the public hostname, where it is blocked.
+5. `.env.prod` starts with the Let's Encrypt staging CA, whose certificates browsers distrust. For real certificates empty `ACME_CA`, run `docker compose -f docker-compose.prod.yml --env-file .env.prod rm -sf web`, `docker volume rm ugo-prod_caddy_data` and `npm run prod:up`.
+
+The frontend bakes in the Keycloak URL at build time, so rebuild (`prod:up`) after changing the hostnames. The Resco import page is only part of development builds.
+
+Moving local data: `npm run db:backup`, start only the prod database (`docker compose -f docker-compose.prod.yml --env-file .env.prod up -d postgres`), then `powershell -File scripts/db-restore.ps1 -Prod -File backups/<dump> -Force`. Data is keyed by the Keycloak user id, so after creating your user in the new Keycloak and before the first login, run `UPDATE "User" SET id = '<new id>' WHERE id = '<old id>'` in the `ugo` database; the owner columns follow through `ON UPDATE CASCADE`.
+
 ## Commands
 
 | Action | Command |

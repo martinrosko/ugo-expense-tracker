@@ -30,7 +30,7 @@ import {
 
 dayjs.extend(isoWeek)
 
-const { Title, Text } = Typography
+const { Title } = Typography
 const { RangePicker } = DatePicker
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -94,8 +94,6 @@ type ChartGroup = 'day' | 'week' | 'month'
 function fmt(v: number): string {
   return (v < 0 ? '-' : '') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
 }
-
-const ASSET_TYPES = new Set(['CASH', 'BANK', 'INVESTMENT'])
 
 const LINE_COLORS = ['#1677ff', '#389e0d', '#cf1322', '#d46b08', '#531dab', '#08979c', '#c41d7f', '#7cb305']
 
