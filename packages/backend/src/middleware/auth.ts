@@ -2,7 +2,8 @@ import type { Request, Response, NextFunction } from 'express'
 import * as jose from 'jose'
 
 const ISSUER = process.env.KEYCLOAK_ISSUER ?? 'http://localhost:8080/realms/ugo'
-const JWKS_URI = `${ISSUER}/protocol/openid-connect/certs`
+// Optional internal address for the keys when ISSUER is the public URL that tokens carry
+const JWKS_URI = process.env.KEYCLOAK_JWKS_URI ?? `${ISSUER}/protocol/openid-connect/certs`
 
 const jwks = jose.createRemoteJWKSet(new URL(JWKS_URI))
 

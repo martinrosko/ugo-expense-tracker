@@ -50,13 +50,34 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: postgresql://ugo:ugo_dev@postgres:5432/ugo
-      KEYCLOAK_ISSUER: http://keycloak:8080/realms/ugo
+      # Tokens carry the public issuer URL; the keys are fetched over the internal network
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/ugo}
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/ugo/protocol/openid-connect/certs
       CORS_ORIGIN: http://localhost:5173
     ports:
       - "3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
+
+  mcp:
+    build:
+      context: ./packages/mcp
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      BACKEND_URL: http://backend:3000
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/ugo}
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/ugo/protocol/openid-connect/certs
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:3001}
+      MCP_AUDIENCE: ${MCP_AUDIENCE:-}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend
+      - keycloak
 
 volumes:
   postgres_data:

@@ -162,7 +162,70 @@ UgoBackend/
 | `postgres` | `postgres:16-alpine` | 5432 | Shared by backend + Keycloak |
 | `keycloak` | `keycloak:26` | 8080 | Auto-imports `ugo` realm on first boot |
 | `backend` | Custom (Node 22) | 3000 | Runs Prisma migrations on start |
+| `mcp` | Custom (Node 22) | 3001 | MCP server, see below |
 | `frontend` | Dev: Vite / Prod: nginx | 5173 | Not in Docker for dev |
+
+## MCP Server (`packages/mcp`)
+
+Lets LLM clients work with Ugo data through MCP tools. It calls the backend REST API with the user's own Keycloak token, so the backend enforces ownership and keeps all business rules (template sync, plan completion, execute/unexecute).
+
+| Area | Tools |
+|------|-------|
+| User | `get_current_user`, `update_current_user` |
+| Accounts | `list_accounts`, `get_account`, `create_account`, `update_account`, `delete_account` |
+| Tags | `list_tags`, `create_tag`, `rename_tag`, `delete_tag`, `set_object_tags` |
+| Plans | `list_plans`, `get_plan`, `get_plan_recurrence`, `create_plan`, `update_plan`, `activate_plan`, `change_plan_recurrence`, `complete_plan`, `cancel_plan`, `delete_plan` |
+| Budgets | `list_budgets`, `get_budget`, `create_budget`, `update_budget`, `delete_budget` |
+| Transactions | `list_transactions`, `get_transaction`, `log_transaction`, `add_planned_transaction`, `update_transaction`, `execute_planned_transaction`, `unexecute_transaction`, `delete_transaction` |
+| Bank tickets (read-only) | `list_bank_tickets`, `get_bank_ticket` |
+
+`delete_*`, `complete_plan` and `cancel_plan` carry the MCP `destructiveHint`, so clients ask for confirmation.
+
+**Environment**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PORT` | `3001` | HTTP port |
+| `BACKEND_URL` | `http://localhost:3000` | Backend base URL |
+| `KEYCLOAK_ISSUER` | `http://localhost:8080/realms/ugo` | Must equal the `iss` of issued tokens (the URL clients use for Keycloak) |
+| `KEYCLOAK_JWKS_URI` | `<issuer>/protocol/openid-connect/certs` | Internal key URL when the issuer is public |
+| `MCP_PUBLIC_URL` | `http://localhost:<PORT>` | Public URL of this server, published in the OAuth metadata |
+| `MCP_AUDIENCE` | unset | Require this `aud` claim (the `ugo-mcp` client adds `ugo-mcp`; clients registered dynamically do not) |
+| `MCP_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to call `/mcp` |
+| `MCP_SCOPES` | `openid profile email` | Scopes clients are told to request (published in the metadata and the 401 challenge) |
+
+**Remote (Streamable HTTP)**: `npm run mcp:dev` or `docker compose up -d mcp`, endpoint `http://localhost:3001/mcp`. Clients discover Keycloak from `/.well-known/oauth-protected-resource` and log in through it. The server is stateless, so it can run as several replicas.
+Keycloak setup:
+- The realm has a pre-registered public client `ugo-mcp` (PKCE, loopback redirect URIs).
+- For clients that register themselves, enable anonymous dynamic client registration in the Keycloak admin console (Clients, Client registration) and add the client's redirect hosts to the *Trusted Hosts* policy.
+
+**Local (stdio)**: stdio cannot run the login flow, so supply a token:
+
+```json
+{
+  "servers": {
+    "ugo": {
+      "command": "node",
+      "args": ["packages/mcp/dist/stdio.js"],
+      "env": {
+        "BACKEND_URL": "http://localhost:3000",
+        "KEYCLOAK_ISSUER": "http://localhost:8080/realms/ugo",
+        "UGO_REFRESH_TOKEN": "<offline refresh token>"
+      }
+    }
+  }
+}
+```
+
+Get a refresh token with the device flow of the `ugo-mcp` client (`UGO_ACCESS_TOKEN` also works but expires after 5 minutes). The client requires PKCE, so use the script instead of plain curl:
+
+```
+npm run mcp:login
+```
+
+It opens the Keycloak login in the browser and prints `UGO_REFRESH_TOKEN=...` once you have logged in.
+
+**Production**: remote clients need HTTPS and a public hostname. Put `mcp`, `backend` and Keycloak behind a reverse proxy, run Keycloak with a fixed `KC_HOSTNAME` instead of the dev settings in `docker-compose.yml`, and set `KEYCLOAK_ISSUER` and `MCP_PUBLIC_URL` (compose reads both from the environment or a `.env` file) to the public URLs.
 
 ## Commands
 
