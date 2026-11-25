@@ -24,7 +24,7 @@
 }
 
 {$AUTH_HOST} {
-	# The master realm and the admin console stay off the internet; use http://localhost:8080 on the host
+	# The master realm and the admin console stay off the internet; use http://localhost:8081 on the host
 	@private path /realms/master /realms/master/* /admin /admin/*
 	handle @private {
 		respond "Not found" 404
