@@ -29,14 +29,14 @@ UgoBackend/
 ├── packages/
 │   ├── frontend/                 ← React SPA (Vite + Ant Design)
 │   │   ├── src/
-│   │   │   ├── api/              Resco OData client + entity APIs
-│   │   │   ├── assets/           Sample CSV, metadata
+│   │   │   ├── api/              Backend API client
+│   │   │   ├── assets/           Sample CSV
 │   │   │   ├── components/       AppLayout
 │   │   │   ├── features/
 │   │   │   │   ├── csv/          CSV parser (VÚB bank format)
 │   │   │   │   └── matching/     Transaction matcher + rules
-│   │   │   ├── pages/            Upload, Review, Resco Test
-│   │   │   └── types/            Resco-specific interfaces
+│   │   │   ├── pages/            Upload, Review, and finance views
+│   │   │   └── types/            Frontend type definitions
 │   │   ├── vite.config.ts
 │   │   └── package.json          @ugo/frontend
 │   │
@@ -238,7 +238,7 @@ Setup:
 4. The Keycloak admin console is only on the host: `http://localhost:8081`, user from `KEYCLOAK_ADMIN_USER`. Registration is off, so create users there. On a fresh database also set the `master` realm's *Frontend URL* to `http://localhost:8081` (Realm settings, General, Advanced); otherwise the console is sent to the public hostname, where it is blocked.
 5. `.env.prod` starts with the Let's Encrypt staging CA, whose certificates browsers distrust. For real certificates empty `ACME_CA`, run `docker compose -f docker-compose.prod.yml --env-file .env.prod rm -sf web`, `docker volume rm ugo-prod_caddy_data` and `npm run prod:up`.
 
-The frontend bakes in the Keycloak URL at build time, so rebuild (`prod:up`) after changing the hostnames. The Resco import page is only part of development builds.
+The frontend bakes in the Keycloak URL at build time, so rebuild (`prod:up`) after changing the hostnames.
 
 Moving local data: `npm run db:backup`, start only the prod database (`docker compose -f docker-compose.prod.yml --env-file .env.prod up -d postgres`), then `powershell -File scripts/db-restore.ps1 -Prod -File backups/<dump> -Force`. Data is keyed by the Keycloak user id, so after creating your user in the new Keycloak and before the first login, run `UPDATE "User" SET id = '<new id>' WHERE id = '<old id>'` in the `ugo` database; the owner columns follow through `ON UPDATE CASCADE`.
 
@@ -275,6 +275,6 @@ host: localhost  port: 5432  db: ugo  user: ugo  pass: ugo_dev
 |-------|-------------|--------|
 | **1** | Monorepo + PostgreSQL + Prisma schema + Docker Compose | ✅ Done |
 | **2** | REST CRUD routes + Keycloak JWT auth middleware | Planned |
-| **3** | Repoint frontend from Resco OData to own backend | Planned |
+| **3** | Repoint frontend from Resco OData to own backend | ✅ Done |
 | **4** | CSV import + transaction matching (server-side or hybrid) | Planned |
 | **5** | Multi-user support, business units, permissions | Planned |

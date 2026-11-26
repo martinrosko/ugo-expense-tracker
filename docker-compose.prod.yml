@@ -94,6 +94,7 @@ services:
       KEYCLOAK_ISSUER: https://${AUTH_HOST}/realms/ugo
       KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/ugo/protocol/openid-connect/certs
       MCP_PUBLIC_URL: https://${MCP_HOST}
+      MCP_SCOPES: profile email
     depends_on:
       - backend
     logging: *logging
