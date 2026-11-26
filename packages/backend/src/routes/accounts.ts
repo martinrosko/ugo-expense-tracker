@@ -7,6 +7,17 @@ import { accountAccessWhere, ASSET_TYPES } from '../services/access.js'
 
 export const accountsRouter = Router()
 
+export const BANK_CODES = [
+  'VUB', 'CSOB', 'TATRABANKA', 'SLSP', 'POSTOVA', 'PRIMA', 'OTP', 'UNICREDIT', 'MBANK', 'FIO', 'B365', 'REVOLUT', 'OTHER',
+]
+
+// Only bank accounts have a bank; an unknown code is rejected
+const bankOf = (type: unknown, bank: unknown): { ok: true; value: string | null | undefined } | { ok: false } => {
+  if (bank === undefined) return { ok: true, value: undefined }
+  if (bank === null || bank === '') return { ok: true, value: null }
+  return type === 'BANK' && typeof bank === 'string' && BANK_CODES.includes(bank) ? { ok: true, value: bank } : { ok: false }
+}
+
 // GET /api/accounts?type=PAYMENT_PARTNER&withTags=true  (own and co-owned accounts)
 accountsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const { type, withTags } = req.query
@@ -31,9 +42,11 @@ accountsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
 
 // POST /api/accounts
 accountsRouter.post('/', async (req: AuthenticatedRequest, res) => {
-  const { id, name, type, initialBalance, isDefault } = req.body
+  const { id, name, type, initialBalance, isDefault, bank } = req.body
+  const checked = bankOf(type, bank)
+  if (!checked.ok) { res.status(400).json({ error: 'Unknown bank' }); return }
   const account = await db.account.create({
-    data: { ...(id ? { id } : {}), name, type, initialBalance, isDefault, ownerId: req.user!.sub },
+    data: { ...(id ? { id } : {}), name, type, initialBalance, isDefault, bank: checked.value, ownerId: req.user!.sub },
   })
   res.status(201).json(account)
 })
@@ -45,13 +58,15 @@ accountsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
     where: { id, ownerId: req.user!.sub },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  const { name, type, initialBalance, isDefault } = req.body
+  const { name, type, initialBalance, isDefault, bank } = req.body
+  const checked = bankOf(type ?? existing.type, bank)
+  if (!checked.ok) { res.status(400).json({ error: 'Unknown bank' }); return }
   if (type === AccountType.PAYMENT_PARTNER && (await db.accountCoOwner.count({ where: { accountId: id } })) > 0) {
     res.status(409).json({ error: 'Remove the co-owners before making this a payment partner' }); return
   }
   const account = await db.account.update({
     where: { id },
-    data: { name, type, initialBalance, isDefault },
+    data: { name, type, initialBalance, isDefault, bank: checked.value },
   })
   res.json(account)
 })

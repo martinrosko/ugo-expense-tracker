@@ -65,6 +65,15 @@ test('plan views keep hidden rows as masked ones and use inherited template valu
   assert.equal(m.fromAccount?.type, 'BANK')
 })
 
+test('plan views flag which rows the viewer may edit', () => {
+  const rows = [tx({ id: 'mine', createdById: 'me' }), tx({ id: 'theirs', createdById: 'other' })]
+  const editable = (role: 'OWNER' | 'CONTRIBUTOR' | 'VIEWER') =>
+    viewForPlan(rows, viewer, 'other', 'p', { role, isTemplate: false }).map((r) => (r as { canEdit: boolean }).canEdit)
+  assert.deepEqual(editable('OWNER'), [true, true])
+  assert.deepEqual(editable('CONTRIBUTOR'), [true, false])
+  assert.deepEqual(editable('VIEWER'), [false, false])
+})
+
 test('account lists drop hidden rows instead of masking them', () => {
   const rows = viewForList([tx(), tx({ id: 't2', fromAccount: foreign })], viewer, () => OWNER)
   assert.deepEqual(rows.map((r) => r.id), ['t1'])

@@ -28,6 +28,10 @@ async function addRole(planId: string | null | undefined, userId: string): Promi
   return plan?.isTemplate === false ? role : null
 }
 
+/** True when a side was redacted because the viewer does not co-own that account. */
+const hasPrivateSide = (tx: { fromAccount?: { id: string } | null; toAccount?: { id: string } | null }) =>
+  tx.fromAccount?.id === '' || tx.toAccount?.id === ''
+
 async function canUseBankTicket(ticketId: unknown, userId: string): Promise<boolean> {
   if (typeof ticketId !== 'string' || ticketId === '') return true
   return (await db.bankTicket.count({ where: { id: ticketId, account: accountAccessWhere(userId) } })) > 0
@@ -113,8 +117,11 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   // Account co-owners need not belong to the plan a transaction sits in
   const planIds = [...new Set(visible.flatMap((t) => [t.plan?.id, t.budget?.plan.id]).filter((id): id is string => !!id))]
   const open = new Set((await db.plan.findMany({ where: { id: { in: planIds }, ...planAccessWhere(userId) }, select: { id: true } })).map((p) => p.id))
+  const editable = new Set((await db.transaction.findMany({ where: { id: { in: visible.map((t) => t.id) }, ...txMutateWhere(userId) }, select: { id: true } })).map((t) => t.id))
   res.json(visible.map((t) => ({
     ...t,
+    canEdit: editable.has(t.id),
+    tags: hasPrivateSide(t) ? [] : t.tags,
     plan: t.plan && open.has(t.plan.id) ? t.plan : null,
     budget: t.budget && open.has(t.budget.plan.id) ? t.budget : null,
     bankTicket: t.bankTicket && viewer.accountIds.has(t.bankTicket.accountId) ? t.bankTicket : null,
@@ -152,7 +159,8 @@ transactionsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
     toAccount: tx.toAccount ?? template?.toAccount ?? null,
   }
   if (!canSeeDetails(merged, viewer, tx.plan?.ownerId ?? tx.budget?.plan.ownerId ?? userId)) { res.status(404).json({ error: 'Not found' }); return }
-  res.json({ ...redactTransaction(merged, viewer), bankTicket: merged.bankTicket && viewer.accountIds.has(merged.bankTicket.accountId) ? merged.bankTicket : null })
+  const shown = redactTransaction(merged, viewer)
+  res.json({ ...shown, tags: hasPrivateSide(shown) ? [] : shown.tags, bankTicket: merged.bankTicket && viewer.accountIds.has(merged.bankTicket.accountId) ? merged.bankTicket : null })
 })
 
 // POST /api/transactions

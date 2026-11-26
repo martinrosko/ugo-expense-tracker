@@ -57,6 +57,7 @@ type Transaction = {
   type: string
   templateId?: string | null
   bankTicketId?: string | null
+  canEdit?: boolean
   fromAccount?: Account | null
   toAccount?: Account | null
   plan?: { id: string; name: string | null; statusCode: number; template?: { name: string | null } | null } | null
@@ -442,7 +443,7 @@ export default function TransactionsPage() {
     if (!plan) return null
     // The plan list is the source of the status, so the actions work even when the transaction payload lacks it
     const planStatus = allPlans.find((p) => p.id === plan.id)?.statusCode ?? plan.statusCode
-    return { id: tx.id, planId: plan.id, planStatus, budgetCompleted: tx.budget?.statusCode === 3, templateId: tx.templateId ?? null, executed: true }
+    return { id: tx.id, planId: plan.id, planStatus, budgetCompleted: tx.budget?.statusCode === 3, templateId: tx.templateId ?? null, executed: true, readOnly: tx.canEdit === false }
   }
 
   const txById = useMemo(() => new Map(filteredTxs.map((t) => [t.id, t])), [filteredTxs])

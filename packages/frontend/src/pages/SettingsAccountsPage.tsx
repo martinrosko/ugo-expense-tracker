@@ -4,15 +4,16 @@ import type { ColumnsType } from 'antd/es/table'
 import { DeleteOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons'
 import apiClient from '../api/apiClient'
 import { apiError } from '../features/planTransactions'
+import { BANKS, BankLabel, bankByCode } from '../features/banks'
 
 const { Title, Paragraph } = Typography
 
-type OwnAccount = { id: string; name: string; type: string; isOwner: boolean }
+type OwnAccount = { id: string; name: string; type: string; isOwner: boolean; bank?: string | null }
 type CoOwner = { userId: string; email: string; name: string }
 
 const ASSET_TYPES = ['CASH', 'BANK', 'INVESTMENT']
 
-type NewAccount = { name: string; type: string; initialBalance?: number }
+type NewAccount = { name: string; type: string; initialBalance?: number; bank?: string }
 
 export default function SettingsAccountsPage() {
   const { message } = AntApp.useApp()
@@ -24,6 +25,7 @@ export default function SettingsAccountsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createForm] = Form.useForm<NewAccount>()
+  const newType = Form.useWatch('type', createForm)
 
   const load = useCallback(async () => {
     try {
@@ -55,7 +57,7 @@ export default function SettingsAccountsPage() {
     const values = await createForm.validateFields()
     setCreating(true)
     try {
-      await apiClient.post('/api/accounts', { name: values.name.trim(), type: values.type, initialBalance: values.initialBalance ?? 0 })
+      await apiClient.post('/api/accounts', { name: values.name.trim(), type: values.type, initialBalance: values.initialBalance ?? 0, bank: values.type === 'BANK' ? values.bank ?? null : null })
       setCreateOpen(false)
       message.success('Account created')
       await load()
@@ -90,6 +92,10 @@ export default function SettingsAccountsPage() {
   const columns: ColumnsType<OwnAccount> = [
     { title: 'Name', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name) },
     { title: 'Type', dataIndex: 'type', width: 140 },
+    {
+      title: 'Bank', width: 220,
+      render: (_, a) => { const bank = bankByCode(a.bank); return bank ? <BankLabel bank={bank} /> : null },
+    },
     { title: 'Access', width: 140, render: (_, a) => <Tag color={a.isOwner ? 'blue' : 'purple'}>{a.isOwner ? 'Owner' : 'Co-owner'}</Tag> },
     {
       title: '', width: 60,
@@ -135,6 +141,14 @@ export default function SettingsAccountsPage() {
           <Form.Item name="type" label="Type" rules={[{ required: true }]}>
             <Select options={ASSET_TYPES.map((t) => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))} />
           </Form.Item>
+          {newType === 'BANK' && (
+            <Form.Item name="bank" label="Bank (optional)">
+              <Select
+                allowClear showSearch optionFilterProp="searchLabel" placeholder="Choose a bank"
+                options={BANKS.map((b) => ({ value: b.code, searchLabel: b.label, label: <BankLabel bank={b} /> }))}
+              />
+            </Form.Item>
+          )}
           <Form.Item name="initialBalance" label="Initial balance" style={{ marginBottom: 0 }}>
             <InputNumber style={{ width: '100%' }} precision={2} suffix="€" />
           </Form.Item>

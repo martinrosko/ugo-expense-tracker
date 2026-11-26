@@ -9,6 +9,8 @@ export type ApiTx = {
   executedOn: string | null
   templateId?: string | null
   bankTicketId?: string | null
+  /** Unset means editable */
+  canEdit?: boolean
   bankTicket?: { executedOn: string } | null
   fromAccount?: { name: string; type: string } | null
   toAccount?: { name: string; type: string } | null
@@ -47,5 +49,5 @@ export function toRow(t: ApiTx): ExecutedTxRow {
 export function actionContext(tx: ApiTx): TxActionContext | null {
   const plan = tx.plan ?? tx.budget?.plan
   if (!plan) return null
-  return { id: tx.id, planId: plan.id, planStatus: plan.statusCode, budgetCompleted: tx.budget?.statusCode === 3, templateId: tx.templateId ?? null, executed: true }
+  return { id: tx.id, planId: plan.id, planStatus: plan.statusCode, budgetCompleted: tx.budget?.statusCode === 3, templateId: tx.templateId ?? null, executed: true, readOnly: tx.canEdit === false }
 }
