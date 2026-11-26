@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
+import { accountAccessWhere, txReadWhere } from '../services/access.js'
 
 export const bankTicketsRouter = Router()
 
@@ -14,7 +15,7 @@ bankTicketsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const { accountId, from, to, unlinked } = req.query
   const tickets = await db.bankTicket.findMany({
     where: {
-      account: { ownerId: req.user!.sub },
+      account: accountAccessWhere(req.user!.sub),
       ...(accountId ? { accountId: String(accountId) } : {}),
       ...(from || to ? { executedOn: { ...(from ? { gte: new Date(String(from).slice(0, 10)) } : {}), ...(to ? { lte: new Date(`${String(to).slice(0, 10)}T23:59:59.999Z`) } : {}) } } : {}),
       // Not booked to a transaction, not paired with a movement and not marked as processed
@@ -44,7 +45,7 @@ bankTicketsRouter.post('/import', async (req: AuthenticatedRequest, res) => {
   const ownerId = req.user!.sub
   const { accountId, rows } = (req.body ?? {}) as { accountId?: string; rows?: ImportRow[] }
   if (!accountId || !Array.isArray(rows)) { res.status(400).json({ error: 'accountId and rows are required' }); return }
-  const account = await db.account.findFirst({ where: { id: accountId, ownerId }, select: { id: true } })
+  const account = await db.account.findFirst({ where: { id: accountId, ...accountAccessWhere(ownerId) }, select: { id: true } })
   if (!account) { res.status(403).json({ error: 'Forbidden' }); return }
 
   const day = (d: Date | string) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 10)
@@ -61,7 +62,7 @@ bankTicketsRouter.post('/import', async (req: AuthenticatedRequest, res) => {
     pairedTransaction: { select: { id: true, fromAccountId: true, toAccountId: true, template: { select: { fromAccountId: true, toAccountId: true } } } },
   }
   const stored = await db.bankTicket.findMany({
-    where: { account: { ownerId }, OR: [{ ticketId: { in: ticketIds } }, { accountId, ticketId: null }] },
+    where: { account: accountAccessWhere(ownerId), OR: [{ ticketId: { in: ticketIds } }, { accountId, ticketId: null }] },
     include,
   })
   const known = new Map(stored.map((t) => [keyOf(t), t]))
@@ -111,7 +112,7 @@ bankTicketsRouter.post('/import', async (req: AuthenticatedRequest, res) => {
 bankTicketsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const ticket = await db.bankTicket.findFirst({
-    where: { id, account: { ownerId: req.user!.sub } },
+    where: { id, account: accountAccessWhere(req.user!.sub) },
     include: { transaction: true },
   })
   if (!ticket) { res.status(404).json({ error: 'Not found' }); return }
@@ -126,7 +127,7 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
   // Verify all referenced accounts belong to this user
   const accountIds = [...new Set(rows.map((r: { accountId: string }) => r.accountId))]
   const ownedAccounts = await db.account.findMany({
-    where: { id: { in: accountIds }, ownerId: req.user!.sub },
+    where: { id: { in: accountIds }, ...accountAccessWhere(req.user!.sub) },
     select: { id: true },
   })
   if (ownedAccounts.length !== accountIds.length) {
@@ -136,7 +137,7 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
   const pairedIds = [...new Set(rows.map((r: { pairedTransactionId?: string }) => r.pairedTransactionId).filter(Boolean) as string[])]
   if (pairedIds.length > 0) {
     const ownedTx = await db.transaction.count({
-      where: { id: { in: pairedIds }, OR: [{ budget: { plan: { ownerId: req.user!.sub } } }, { plan: { ownerId: req.user!.sub } }] },
+      where: { id: { in: pairedIds }, ...txReadWhere(req.user!.sub) },
     })
     if (ownedTx !== pairedIds.length) { res.status(403).json({ error: 'Forbidden' }); return }
   }
@@ -144,7 +145,7 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
   // A row with an id refers to an already stored ticket (e.g. one picked from the review list); others are upserted
   const storedIds = [...new Set(rows.map((r: { id?: string }) => r.id).filter(Boolean) as string[])]
   if (storedIds.length > 0) {
-    const ownedTickets = await db.bankTicket.count({ where: { id: { in: storedIds }, account: { ownerId: req.user!.sub } } })
+    const ownedTickets = await db.bankTicket.count({ where: { id: { in: storedIds }, account: accountAccessWhere(req.user!.sub) } })
     if (ownedTickets !== storedIds.length) { res.status(403).json({ error: 'Forbidden' }); return }
   }
 
@@ -194,7 +195,7 @@ bankTicketsRouter.post('/', async (req: AuthenticatedRequest, res) => {
 bankTicketsRouter.post('/:id/unpair', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const existing = await db.bankTicket.findFirst({
-    where: { id, account: { ownerId: req.user!.sub } },
+    where: { id, account: accountAccessWhere(req.user!.sub) },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
   const ticket = await db.bankTicket.update({ where: { id }, data: { pairedTransactionId: null, stateCode: 0 } })
@@ -209,7 +210,7 @@ bankTicketsRouter.post('/:id/check-counterpart', async (req: AuthenticatedReques
   const ownerId = req.user!.sub
   const txInfo = { select: { id: true, fromAccount: { select: { type: true } }, toAccount: { select: { type: true } } } }
   const ticket = await db.bankTicket.findFirst({
-    where: { id, account: { ownerId } },
+    where: { id, account: accountAccessWhere(ownerId) },
     include: { transaction: txInfo, pairedTransaction: txInfo },
   })
   if (!ticket) { res.status(404).json({ error: 'Not found' }); return }
@@ -218,7 +219,7 @@ bankTicketsRouter.post('/:id/check-counterpart', async (req: AuthenticatedReques
   const found = await db.bankTicket.findMany({
     where: {
       id: { not: id },
-      account: { ownerId },
+      account: accountAccessWhere(ownerId),
       accountId: { not: ticket.accountId },
       amount: ticket.amount.neg(),
       executedOn: { gte: new Date(ticket.executedOn.getTime() - 5 * DAY), lte: new Date(ticket.executedOn.getTime() + 5 * DAY) },
@@ -249,7 +250,7 @@ bankTicketsRouter.post('/:id/check-counterpart', async (req: AuthenticatedReques
 bankTicketsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const existing = await db.bankTicket.findFirst({
-    where: { id, account: { ownerId: req.user!.sub } },
+    where: { id, account: accountAccessWhere(req.user!.sub) },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
   await db.bankTicket.delete({ where: { id } })

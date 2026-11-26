@@ -4,30 +4,64 @@ import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
 import { isTemplateTransaction, propagateTransactionCreated, removeTemplateTransaction } from '../services/templateSync.js'
 import { replaceObjectTags } from '../services/tagObjects.js'
+import {
+  accountAccessWhere, canSeeDetails, canUseAccounts, loadViewer, planAccess, planAccessWhere, redactTransaction,
+  txMutateWhere, txReadWhere, viewForList, type PlanAccess,
+} from '../services/access.js'
 
 export const transactionsRouter = Router()
 
-// Ownership filter: transaction belongs to user if its budget→plan or plan is owned by user
-const ownerFilter = (ownerId: string) => ({
-  OR: [
-    { budget: { plan: { ownerId } } },
-    { plan: { ownerId } },
-  ],
-})
+const ACCOUNT_REF = { id: true, name: true, type: true } as const
+const planRefs = { select: { ownerId: true } } as const
 
 // Makes the transaction's tags equal to tagIds; a missing tagIds leaves them untouched
 const replaceTags = (client: Prisma.TransactionClient, transactionId: string, ownerId: string, tagIds: unknown) =>
   replaceObjectTags(client, 'transaction', transactionId, ownerId, tagIds)
 
+/** The role the user may add transactions to the plan with; contributors may not touch template plans. */
+async function addRole(planId: string | null | undefined, userId: string): Promise<PlanAccess | null> {
+  if (!planId) return null
+  const role = await planAccess(db, planId, userId)
+  if (role === 'OWNER') return role
+  if (role !== 'CONTRIBUTOR') return null
+  const plan = await db.plan.findUnique({ where: { id: planId }, select: { isTemplate: true } })
+  return plan?.isTemplate === false ? role : null
+}
+
+async function canUseBankTicket(ticketId: unknown, userId: string): Promise<boolean> {
+  if (typeof ticketId !== 'string' || ticketId === '') return true
+  return (await db.bankTicket.count({ where: { id: ticketId, account: accountAccessWhere(userId) } })) > 0
+}
+
+/** Finds a transaction the user may read in detail (`mutate` also requires the right to change it). */
+async function loadTransaction(id: string, userId: string, mutate: boolean) {
+  const row = await db.transaction.findFirst({
+    where: { id, ...(mutate ? txMutateWhere(userId) : txReadWhere(userId)) },
+    include: {
+      template: { select: { fromAccount: { select: ACCOUNT_REF }, toAccount: { select: ACCOUNT_REF } } },
+      fromAccount: { select: ACCOUNT_REF },
+      toAccount: { select: ACCOUNT_REF },
+      plan: planRefs,
+      budget: { select: { plan: planRefs } },
+    },
+  })
+  if (!row) return null
+  const planOwnerId = row.plan?.ownerId ?? row.budget?.plan.ownerId ?? userId
+  const effective = { ...row, fromAccount: row.fromAccount ?? row.template?.fromAccount ?? null, toAccount: row.toAccount ?? row.template?.toAccount ?? null }
+  if (!canSeeDetails(effective, await loadViewer(db, userId), planOwnerId)) return null
+  return { row, planOwnerId }
+}
+
 // GET /api/transactions?budgetId=xxx&planId=xxx&unmatched=true&from=YYYY-MM-DD&to=YYYY-MM-DD&executed=true
 transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user!.sub
   const { budgetId, planId, unmatched, from, to, executed, accountId, isTemplate } = req.query
   const fromDate = from ? new Date(String(from).slice(0, 10)) : null
   const toDate = to ? new Date(String(to).slice(0, 10) + 'T23:59:59') : null
   const raw = await db.transaction.findMany({
     where: {
-      ...ownerFilter(req.user!.sub),
-      // Separate AND entries so the OR clauses don't overwrite each other or the owner filter
+      ...txReadWhere(userId),
+      // Separate AND entries so the OR clauses don't overwrite each other or the access filter
       AND: [
         // A template plan or budget also matches everything of its instances
         ...(budgetId ? [{ OR: [{ budgetId: String(budgetId) }, { budget: { templateId: String(budgetId) } }] }] : []),
@@ -51,17 +85,17 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
 
     },
     include: {
-      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true, fromAccount: { select: { id: true, name: true, type: true } }, toAccount: { select: { id: true, name: true, type: true } } } },
-      tags: { include: { tag: true } },
+      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true, fromAccount: { select: ACCOUNT_REF }, toAccount: { select: ACCOUNT_REF } } },
+      tags: { where: { tag: { ownerId: userId } }, include: { tag: true } },
       bankTicket: true,
-      fromAccount: { select: { id: true, name: true, type: true } },
-      toAccount: { select: { id: true, name: true, type: true } },
-      plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true, template: { select: { name: true } } } },
-      budget: { select: { id: true, name: true, statusCode: true, template: { select: { name: true } }, plan: { select: { id: true, name: true, startDate: true, endDate: true, statusCode: true, template: { select: { name: true } } } } } },
+      fromAccount: { select: ACCOUNT_REF },
+      toAccount: { select: ACCOUNT_REF },
+      plan: { select: { id: true, ownerId: true, name: true, startDate: true, endDate: true, statusCode: true, template: { select: { name: true } } } },
+      budget: { select: { id: true, name: true, statusCode: true, template: { select: { name: true } }, plan: { select: { id: true, ownerId: true, name: true, startDate: true, endDate: true, statusCode: true, template: { select: { name: true } } } } } },
     },
     orderBy: { executedOn: 'desc' },
   })
-  const transactions = raw.map(({ template, ...tx }) => ({
+  const merged = raw.map(({ template, ...tx }) => ({
     ...tx,
     name: tx.name ?? template?.name ?? null,
     plannedAmount: tx.plannedAmount ?? template?.plannedAmount ?? null,
@@ -73,23 +107,40 @@ transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
     fromAccount: tx.fromAccount ?? template?.fromAccount ?? null,
     toAccount: tx.toAccount ?? template?.toAccount ?? null,
   }))
-  res.json(transactions)
+  const viewer = await loadViewer(db, userId)
+  const visible = viewForList(merged, viewer, (t) => (t.plan ?? t.budget?.plan)?.ownerId ?? userId)
+
+  // Account co-owners need not belong to the plan a transaction sits in
+  const planIds = [...new Set(visible.flatMap((t) => [t.plan?.id, t.budget?.plan.id]).filter((id): id is string => !!id))]
+  const open = new Set((await db.plan.findMany({ where: { id: { in: planIds }, ...planAccessWhere(userId) }, select: { id: true } })).map((p) => p.id))
+  res.json(visible.map((t) => ({
+    ...t,
+    plan: t.plan && open.has(t.plan.id) ? t.plan : null,
+    budget: t.budget && open.has(t.budget.plan.id) ? t.budget : null,
+    bankTicket: t.bankTicket && viewer.accountIds.has(t.bankTicket.accountId) ? t.bankTicket : null,
+  })))
 })
 
 // GET /api/transactions/:id
 transactionsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user!.sub
   const id = String(req.params.id)
   const raw = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
+    where: { id, ...txReadWhere(userId) },
     include: {
-      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true } },
-      tags: { include: { tag: true } },
+      template: { select: { name: true, plannedAmount: true, plannedOn: true, dueDateConfig: true, fromAccountId: true, toAccountId: true, fromAccount: { select: ACCOUNT_REF }, toAccount: { select: ACCOUNT_REF } } },
+      tags: { where: { tag: { ownerId: userId } }, include: { tag: true } },
       bankTicket: true,
+      fromAccount: { select: ACCOUNT_REF },
+      toAccount: { select: ACCOUNT_REF },
+      plan: planRefs,
+      budget: { select: { plan: planRefs } },
     },
   })
   if (!raw) { res.status(404).json({ error: 'Not found' }); return }
   const { template, ...tx } = raw
-  res.json({
+  const viewer = await loadViewer(db, userId)
+  const merged = {
     ...tx,
     name: tx.name ?? template?.name ?? null,
     plannedAmount: tx.plannedAmount ?? template?.plannedAmount ?? null,
@@ -97,20 +148,28 @@ transactionsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
     dueDateConfig: tx.dueDateConfig ?? template?.dueDateConfig ?? null,
     fromAccountId: tx.fromAccountId ?? template?.fromAccountId ?? null,
     toAccountId: tx.toAccountId ?? template?.toAccountId ?? null,
-  })
+    fromAccount: tx.fromAccount ?? template?.fromAccount ?? null,
+    toAccount: tx.toAccount ?? template?.toAccount ?? null,
+  }
+  if (!canSeeDetails(merged, viewer, tx.plan?.ownerId ?? tx.budget?.plan.ownerId ?? userId)) { res.status(404).json({ error: 'Not found' }); return }
+  res.json({ ...redactTransaction(merged, viewer), bankTicket: merged.bankTicket && viewer.accountIds.has(merged.bankTicket.accountId) ? merged.bankTicket : null })
 })
 
 // POST /api/transactions
 transactionsRouter.post('/', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user!.sub
   const { id, name, amount, plannedAmount, plannedOn, executedOn, dueDateConfig, type, budgetId, planId, bankTicketId, fromAccountId, toAccountId, templateId, stateCode, statusCode, tagIds } = req.body
-  // Verify ownership: at least one of budget or plan must belong to this user
-  if (budgetId) {
-    const budget = await db.budget.findFirst({ where: { id: budgetId, plan: { ownerId: req.user!.sub } } })
-    if (!budget) { res.status(403).json({ error: 'Forbidden' }); return }
-  } else if (planId) {
-    const plan = await db.plan.findFirst({ where: { id: planId, ownerId: req.user!.sub } })
-    if (!plan) { res.status(403).json({ error: 'Forbidden' }); return }
+  let role: PlanAccess | null = 'OWNER'
+  // The target plan must be the user's own or one they contribute to
+  if (budgetId || planId) {
+    const targetPlanId = budgetId ? (await db.budget.findUnique({ where: { id: String(budgetId) }, select: { planId: true } }))?.planId : String(planId)
+    role = await addRole(targetPlanId, userId)
+    if (!role) { res.status(403).json({ error: 'Forbidden' }); return }
   }
+  if (!(await canUseAccounts(db, userId, [fromAccountId, toAccountId])) || !(await canUseBankTicket(bankTicketId, userId))) {
+    res.status(403).json({ error: 'Forbidden' }); return
+  }
+  const owner = role === 'OWNER'
 
   const tx = await db.$transaction(async (client) => {
     const created = await client.transaction.create({
@@ -128,13 +187,15 @@ transactionsRouter.post('/', async (req: AuthenticatedRequest, res) => {
         bankTicketId,
         fromAccountId,
         toAccountId,
-        templateId,
-        stateCode,
-        statusCode,
+        // Contributors cannot tie a row to a template or set its lifecycle
+        templateId: owner ? templateId : undefined,
+        stateCode: owner ? stateCode : undefined,
+        statusCode: owner ? statusCode : undefined,
+        createdById: userId,
       },
-      include: { tags: { include: { tag: true } } },
+      include: { tags: { where: { tag: { ownerId: userId } }, include: { tag: true } } },
     })
-    await replaceTags(client, created.id, req.user!.sub, tagIds)
+    await replaceTags(client, created.id, userId, tagIds)
     await propagateTransactionCreated(client, created)
     return created
   })
@@ -143,27 +204,27 @@ transactionsRouter.post('/', async (req: AuthenticatedRequest, res) => {
 
 // PATCH /api/transactions/:id
 transactionsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user!.sub
   const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  const found = await loadTransaction(id, userId, true)
+  if (!found) { res.status(404).json({ error: 'Not found' }); return }
+  const existing = found.row
+  const owner = found.planOwnerId === userId
   const { name, amount, plannedAmount, plannedOn, executedOn, dueDateConfig, type, bankTicketId, fromAccountId, toAccountId, templateId, stateCode, statusCode, tagIds } = req.body
+  if (!(await canUseAccounts(db, userId, [fromAccountId, toAccountId])) || !(await canUseBankTicket(bankTicketId, userId))) {
+    res.status(403).json({ error: 'Forbidden' }); return
+  }
   // Moving: a transaction belongs either to a budget or directly to a plan; planned (template-based) ones stay where they are
   const moving = req.body.budgetId !== undefined || req.body.planId !== undefined
   if (moving) {
     if (existing.templateId) { res.status(409).json({ error: 'Planned transactions cannot be moved' }); return }
     const { budgetId, planId } = req.body
-    if (budgetId) {
-      const budget = await db.budget.findFirst({ where: { id: String(budgetId), plan: { ownerId: req.user!.sub, isTemplate: false } } })
-      if (!budget) { res.status(403).json({ error: 'Forbidden' }); return }
-    } else {
-      const plan = await db.plan.findFirst({ where: { id: String(planId), ownerId: req.user!.sub, isTemplate: false } })
-      if (!plan) { res.status(403).json({ error: 'Forbidden' }); return }
-    }
+    const targetPlanId = budgetId ? (await db.budget.findUnique({ where: { id: String(budgetId) }, select: { planId: true } }))?.planId : String(planId)
+    const target = targetPlanId ? await db.plan.findFirst({ where: { id: targetPlanId, isTemplate: false }, select: { id: true } }) : null
+    if (!target || !(await addRole(target.id, userId))) { res.status(403).json({ error: 'Forbidden' }); return }
   }
   const tx = await db.$transaction(async (client) => {
-    await replaceTags(client, id, req.user!.sub, tagIds)
+    await replaceTags(client, id, userId, tagIds)
     return client.transaction.update({
       where: { id },
       data: {
@@ -178,11 +239,11 @@ transactionsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
         bankTicketId,
         fromAccountId,
         toAccountId,
-        templateId,
-        stateCode,
-        statusCode,
+        templateId: owner ? templateId : undefined,
+        stateCode: owner ? stateCode : undefined,
+        statusCode: owner ? statusCode : undefined,
       },
-      include: { tags: { include: { tag: true } } },
+      include: { tags: { where: { tag: { ownerId: userId } }, include: { tag: true } } },
     })
   })
   res.json(tx)
@@ -191,10 +252,9 @@ transactionsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
 // DELETE /api/transactions/:id
 transactionsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  const found = await loadTransaction(id, req.user!.sub, true)
+  if (!found) { res.status(404).json({ error: 'Not found' }); return }
+  const existing = found.row
   await db.$transaction(async (tx) => {
     if (await isTemplateTransaction(tx, existing)) await removeTemplateTransaction(tx, existing)
     await tx.tagObject.deleteMany({ where: { transactionId: id } })
@@ -206,9 +266,11 @@ transactionsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
 // POST /api/transactions/:id/execute  body: { executedOn?: ISO date, amount?: number, name?, fromAccountId?, toAccountId? }
 // Logs a planned transaction of an active plan as executed; amount defaults to the planned amount.
 transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user!.sub
   const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
+  if (!(await loadTransaction(id, userId, true))) { res.status(404).json({ error: 'Not found' }); return }
+  const existing = await db.transaction.findUnique({
+    where: { id },
     include: { template: true, plan: true, budget: { include: { plan: true } } },
   })
   if (!existing) { res.status(404).json({ error: 'Not found' }); return }
@@ -220,9 +282,10 @@ transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) =
   if (isNaN(executedOn.getTime())) { res.status(400).json({ error: 'Invalid executedOn' }); return }
   const amount = Number(req.body?.amount ?? existing.plannedAmount ?? existing.template?.plannedAmount)
   if (!Number.isFinite(amount) || amount <= 0) { res.status(400).json({ error: 'A positive amount is required' }); return }
+  if (!(await canUseAccounts(db, userId, [req.body?.fromAccountId, req.body?.toAccountId]))) { res.status(403).json({ error: 'Forbidden' }); return }
 
   const tx = await db.$transaction(async (client) => {
-    await replaceTags(client, id, req.user!.sub, req.body?.tagIds)
+    await replaceTags(client, id, userId, req.body?.tagIds)
     return client.transaction.update({
       where: { id },
       data: {
@@ -241,13 +304,13 @@ transactionsRouter.post('/:id/execute', async (req: AuthenticatedRequest, res) =
 // POST /api/transactions/:id/unlink-bank-ticket
 // Detaches the bank ticket but keeps it, unprocessed, so it can be linked to another transaction.
 transactionsRouter.post('/:id/unlink-bank-ticket', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user!.sub
   const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  const bankTicketId = existing.bankTicketId
+  const found = await loadTransaction(id, userId, true)
+  if (!found) { res.status(404).json({ error: 'Not found' }); return }
+  const bankTicketId = found.row.bankTicketId
   if (!bankTicketId) { res.status(409).json({ error: 'Transaction has no bank ticket' }); return }
+  if (!(await canUseBankTicket(bankTicketId, userId))) { res.status(403).json({ error: 'Forbidden' }); return }
   await db.$transaction(async (client) => {
     await client.transaction.update({ where: { id }, data: { bankTicketId: null } })
     await client.bankTicket.update({ where: { id: bankTicketId }, data: { stateCode: 0, pairedTransactionId: null } })
@@ -259,10 +322,9 @@ transactionsRouter.post('/:id/unlink-bank-ticket', async (req: AuthenticatedRequ
 // Reverts an executed template-based transaction to its planned state.
 transactionsRouter.post('/:id/unexecute', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  const found = await loadTransaction(id, req.user!.sub, true)
+  if (!found) { res.status(404).json({ error: 'Not found' }); return }
+  const existing = found.row
   if (!existing.executedOn) { res.status(409).json({ error: 'Transaction is not executed' }); return }
   if (!existing.templateId) { res.status(409).json({ error: 'Only template transactions can be discarded; delete it instead' }); return }
   const tx = await db.$transaction(async (client) => {
@@ -275,10 +337,7 @@ transactionsRouter.post('/:id/unexecute', async (req: AuthenticatedRequest, res)
 // POST /api/transactions/:id/tags
 transactionsRouter.post('/:id/tags', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  if (!(await loadTransaction(id, req.user!.sub, false))) { res.status(404).json({ error: 'Not found' }); return }
   const { id: linkId, tagId, amount } = req.body
   const ownTag = await db.tag.findFirst({ where: { id: String(tagId), ownerId: req.user!.sub }, select: { id: true } })
   if (!ownTag) { res.status(404).json({ error: 'Tag not found' }); return }
@@ -298,137 +357,10 @@ transactionsRouter.post('/:id/tags', async (req: AuthenticatedRequest, res) => {
 transactionsRouter.delete('/:id/tags/:tagId', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   const tagId = String(req.params.tagId)
-  const existing = await db.transaction.findFirst({
-    where: { id, ...ownerFilter(req.user!.sub) },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
+  if (!(await loadTransaction(id, req.user!.sub, false))) { res.status(404).json({ error: 'Not found' }); return }
+  // Only the user's own tag links; other users' tags on the same row stay
   await db.tagObject.deleteMany({
-    where: { transactionId: id, tagId },
-  })
-  res.status(204).end()
-})
-
-// GET /api/transactions?budgetId=xxx&unmatched=true
-transactionsRouter.get('/', async (req: AuthenticatedRequest, res) => {
-  const { budgetId, unmatched } = req.query
-  const transactions = await db.transaction.findMany({
-    where: {
-      budget: { plan: { ownerId: req.user!.sub } },
-      ...(budgetId ? { budgetId: String(budgetId) } : {}),
-      ...(unmatched === 'true' ? { bankTicketId: null } : {}),
-    },
-    include: {
-      tags: { include: { tag: true } },
-      bankTicket: true,
-    },
-    orderBy: { plannedOn: 'desc' },
-  })
-  res.json(transactions)
-})
-
-// GET /api/transactions/:id
-transactionsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
-  const id = String(req.params.id)
-  const tx = await db.transaction.findFirst({
-    where: { id, budget: { plan: { ownerId: req.user!.sub } } },
-    include: { tags: { include: { tag: true } }, bankTicket: true },
-  })
-  if (!tx) { res.status(404).json({ error: 'Not found' }); return }
-  res.json(tx)
-})
-
-// POST /api/transactions
-transactionsRouter.post('/', async (req: AuthenticatedRequest, res) => {
-  const { name, amount, plannedAmount, plannedOn, executedOn, type, budgetId, bankTicketId, fromAccountId, toAccountId, tagIds } = req.body
-  // Verify budget belongs to this user
-  const budget = await db.budget.findFirst({
-    where: { id: budgetId, plan: { ownerId: req.user!.sub } },
-  })
-  if (!budget) { res.status(403).json({ error: 'Forbidden' }); return }
-
-  const tx = await db.transaction.create({
-    data: {
-      name,
-      amount,
-      plannedAmount,
-      plannedOn: plannedOn ? new Date(plannedOn) : undefined,
-      executedOn: executedOn ? new Date(executedOn) : undefined,
-      type,
-      budgetId,
-      bankTicketId,
-      fromAccountId,
-      toAccountId,
-      tags: tagIds?.length
-        ? { create: tagIds.map((tagId: string) => ({ tagId })) }
-        : undefined,
-    },
-    include: { tags: { include: { tag: true } } },
-  })
-  res.status(201).json(tx)
-})
-
-// PATCH /api/transactions/:id
-transactionsRouter.patch('/:id', async (req: AuthenticatedRequest, res) => {
-  const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, budget: { plan: { ownerId: req.user!.sub } } },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  const { name, amount, plannedAmount, plannedOn, executedOn, type, bankTicketId, fromAccountId, toAccountId } = req.body
-  const tx = await db.transaction.update({
-    where: { id },
-    data: {
-      name,
-      amount,
-      plannedAmount,
-      plannedOn: plannedOn ? new Date(plannedOn) : undefined,
-      executedOn: executedOn ? new Date(executedOn) : undefined,
-      type,
-      bankTicketId,
-      fromAccountId,
-      toAccountId,
-    },
-    include: { tags: { include: { tag: true } } },
-  })
-  res.json(tx)
-})
-
-// DELETE /api/transactions/:id
-transactionsRouter.delete('/:id', async (req: AuthenticatedRequest, res) => {
-  const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, budget: { plan: { ownerId: req.user!.sub } } },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  await db.transaction.delete({ where: { id } })
-  res.status(204).end()
-})
-
-// POST /api/transactions/:id/tags
-transactionsRouter.post('/:id/tags', async (req: AuthenticatedRequest, res) => {
-  const id = String(req.params.id)
-  const existing = await db.transaction.findFirst({
-    where: { id, budget: { plan: { ownerId: req.user!.sub } } },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  const { tagId, amount } = req.body
-  const tag = await db.tagObject.create({
-    data: { transactionId: id, tagId, amount },
-    include: { tag: true },
-  })
-  res.status(201).json(tag)
-})
-
-// DELETE /api/transactions/:id/tags/:tagId
-transactionsRouter.delete('/:id/tags/:tagId', async (req: AuthenticatedRequest, res) => {
-  const id = String(req.params.id)
-  const tagId = String(req.params.tagId)
-  const existing = await db.transaction.findFirst({
-    where: { id, budget: { plan: { ownerId: req.user!.sub } } },
-  })
-  if (!existing) { res.status(404).json({ error: 'Not found' }); return }
-  await db.tagObject.deleteMany({
-    where: { transactionId: id, tagId },
+    where: { transactionId: id, tagId, tag: { ownerId: req.user!.sub } },
   })
   res.status(204).end()
 })

@@ -11,6 +11,10 @@ export type TxSummary = {
   type: 'TRANSACTION' | 'BALANCE'
   templateId?: string | null
   bankTicketId?: string | null
+  /** A row of someone else's account: only dates, amounts and direction are known */
+  masked?: boolean
+  /** Whether the current user may act on the row; unset means yes */
+  canEdit?: boolean
   fromAccount?: { type: string } | null
   toAccount?: { type: string } | null
 }

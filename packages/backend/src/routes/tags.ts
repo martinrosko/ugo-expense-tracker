@@ -66,7 +66,7 @@ tagsRouter.get('/objects/:type/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
   if (!isTagObjectType(type)) { res.status(400).json({ error: 'Unknown object type' }); return }
   if (!(await ownsObject(db, type, id, req.user!.sub))) { res.status(404).json({ error: 'Not found' }); return }
-  res.json(await listObjectTags(db, type, id))
+  res.json(await listObjectTags(db, type, id, req.user!.sub))
 })
 
 // PUT /api/tags/objects/:type/:id  body: { tagIds: string[] }  — replaces the object's tags
@@ -78,7 +78,7 @@ tagsRouter.put('/objects/:type/:id', async (req: AuthenticatedRequest, res) => {
   if (!(await ownsObject(db, type, id, req.user!.sub))) { res.status(404).json({ error: 'Not found' }); return }
   const tags = await db.$transaction(async (client) => {
     await replaceObjectTags(client, type, id, req.user!.sub, req.body.tagIds)
-    return listObjectTags(client, type, id)
+    return listObjectTags(client, type, id, req.user!.sub)
   })
   res.json(tags)
 })

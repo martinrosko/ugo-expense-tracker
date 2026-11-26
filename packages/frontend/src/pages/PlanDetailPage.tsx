@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Alert, Button, Space, Spin, Table, Tag, Tooltip, Typography } from 'antd'
-import { ArrowLeftOutlined, EditOutlined, ExclamationCircleOutlined, LinkOutlined, PlusOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, EditOutlined, ExclamationCircleOutlined, LinkOutlined, LockOutlined, PlusOutlined, ShareAltOutlined } from '@ant-design/icons'
 import apiClient from '../api/apiClient'
 import LogTransactionModal from '../components/LogTransactionModal'
+import PlanMembersModal from '../components/PlanMembersModal'
 import RowActions from '../components/RowActions'
 import ExecutedTransactionsTable, { type ExecutedTxRow } from '../components/ExecutedTransactionsTable'
 import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
@@ -51,6 +52,7 @@ export default function PlanDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [logOpen, setLogOpen] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -116,6 +118,8 @@ export default function PlanDetailPage() {
 
   const completed = plan.statusCode === 3
   const active = plan.statusCode === 1
+  const owner = (plan.myRole ?? 'OWNER') === 'OWNER'
+  const canLog = plan.myRole !== 'VIEWER'
   const title = planLabel({ name: plan.name ?? plan.template?.name ?? null, isTemplate: plan.isTemplate, intervalType: plan.intervalType, startDate: plan.startDate })
   const dateRange = [plan.startDate, plan.endDate].filter(Boolean).map((d) => new Date(d!).toLocaleDateString('sk-SK')).join(' – ')
 
@@ -125,7 +129,8 @@ export default function PlanDetailPage() {
       <Space size={4} style={overdue ? { color: '#cf1322', fontWeight: 600 } : undefined}>
         {overdue && <Tooltip title="Overdue"><ExclamationCircleOutlined /></Tooltip>}
         <span>{t.name}</span>
-        {t.templateId && <Tag style={{ fontSize: 11 }}>template</Tag>}
+        {t.raw.masked && <Tooltip title="On an account you do not co-own; only date and amount are shown"><LockOutlined style={{ color: '#8c8c8c' }} /></Tooltip>}
+        {t.templateId && !t.raw.masked && <Tag style={{ fontSize: 11 }}>template</Tag>}
         {t.raw.bankTicketId && <Tooltip title="Linked to a bank ticket"><LinkOutlined style={{ color: '#1677ff' }} /></Tooltip>}
       </Space>
     )
@@ -134,6 +139,7 @@ export default function PlanDetailPage() {
 
   const txContext = (t: Tx): TxActionContext => ({
     id: t.id, planId: plan.id, planStatus: plan.statusCode, budgetCompleted: t.budgetCompleted, templateId: t.templateId, executed: t.executedOn !== null,
+    readOnly: t.raw.canEdit === false,
   })
   return (
     <Space orientation="vertical" style={{ width: '100%' }} size="large">
@@ -142,12 +148,17 @@ export default function PlanDetailPage() {
         <Title level={4} style={{ margin: 0 }}>{title}</Title>
         <Tag color={STATUS_COLOR[plan.statusCode]}>{STATUS_LABEL[plan.statusCode]}</Tag>
         {dateRange && <Text type="secondary">{dateRange}</Text>}
-        {!completed && (
+        {!completed && owner && (
           <Tooltip title="Edit plan">
             <Button size="small" type="text" icon={<EditOutlined />} onClick={() => navigate(`/plans/${plan.id}/edit`)} />
           </Tooltip>
         )}
-        {(active || completed) && (
+        {owner && (
+          <Tooltip title="Share plan">
+            <Button size="small" type="text" icon={<ShareAltOutlined />} onClick={() => setShareOpen(true)} />
+          </Tooltip>
+        )}
+        {canLog && (active || completed) && (
           <Button
             type="primary" size="small" icon={<PlusOutlined />}
             onClick={() => setLogOpen(true)}
@@ -207,6 +218,7 @@ export default function PlanDetailPage() {
       </div>
 
       {modals}
+      <PlanMembersModal planId={shareOpen ? plan.id : null} title={title} onClose={() => setShareOpen(false)} />
       <LogTransactionModal open={logOpen} planId={plan.id} onClose={() => setLogOpen(false)} onLogged={() => { void load() }} />
     </Space>
   )

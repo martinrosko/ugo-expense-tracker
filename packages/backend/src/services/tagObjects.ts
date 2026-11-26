@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client'
 import { sortByName } from './sortNames.js'
+import { accountAccessWhere, planAccessWhere, txReadWhere } from './access.js'
 
 export type TagObjectType = 'transaction' | 'plan' | 'budget' | 'account'
 
@@ -14,22 +15,22 @@ const targetOf = (type: TagObjectType, id: string) => ({
   account: { accountId: id },
 })[type]
 
-/** True when the object exists and belongs to the user. */
+/** True when the object exists and the user can access it (tags on it are private to their owner anyway). */
 export async function ownsObject(client: Prisma.TransactionClient, type: TagObjectType, id: string, ownerId: string): Promise<boolean> {
   switch (type) {
     case 'transaction':
-      return !!(await client.transaction.findFirst({ where: { id, OR: [{ budget: { plan: { ownerId } } }, { plan: { ownerId } }] }, select: { id: true } }))
+      return !!(await client.transaction.findFirst({ where: { id, ...txReadWhere(ownerId) }, select: { id: true } }))
     case 'plan':
-      return !!(await client.plan.findFirst({ where: { id, ownerId }, select: { id: true } }))
+      return !!(await client.plan.findFirst({ where: { id, ...planAccessWhere(ownerId) }, select: { id: true } }))
     case 'budget':
-      return !!(await client.budget.findFirst({ where: { id, plan: { ownerId } }, select: { id: true } }))
+      return !!(await client.budget.findFirst({ where: { id, plan: planAccessWhere(ownerId) }, select: { id: true } }))
     case 'account':
-      return !!(await client.account.findFirst({ where: { id, ownerId }, select: { id: true } }))
+      return !!(await client.account.findFirst({ where: { id, ...accountAccessWhere(ownerId) }, select: { id: true } }))
   }
 }
 
-export async function listObjectTags(client: Prisma.TransactionClient, type: TagObjectType, id: string) {
-  return sortByName(await client.tag.findMany({ where: { objects: { some: targetOf(type, id) } } }))
+export async function listObjectTags(client: Prisma.TransactionClient, type: TagObjectType, id: string, ownerId: string) {
+  return sortByName(await client.tag.findMany({ where: { ownerId, objects: { some: targetOf(type, id) } } }))
 }
 
 /** Distinct tags of all given objects the owner owns, including those of the template a plan or budget is based on. */

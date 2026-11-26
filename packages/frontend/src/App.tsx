@@ -13,6 +13,7 @@ import ExecutionChartPage from './pages/ExecutionChartPage'
 import AccountBalancePage from './pages/AccountBalancePage'
 import SettingsTagsPage from './pages/SettingsTagsPage'
 import SettingsPartnersPage from './pages/SettingsPartnersPage'
+import SettingsAccountsPage from './pages/SettingsAccountsPage'
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
                 <Route path="/settings" element={<Navigate to="/settings/tags" replace />} />
                 <Route path="/settings/tags" element={<SettingsTagsPage />} />
                 <Route path="/settings/partners" element={<SettingsPartnersPage />} />
+                <Route path="/settings/accounts" element={<SettingsAccountsPage />} />
               </Routes>
             </AppLayout>
           </RequireAuth>

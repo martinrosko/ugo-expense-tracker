@@ -3,27 +3,40 @@ import db from '../db.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
 import { propagateBudgetCreated, removeTemplateBudget } from '../services/templateSync.js'
 import { sortByName } from '../services/sortNames.js'
+import { canUseAccounts, loadViewer, planAccessWhere, viewForPlan } from '../services/access.js'
 
 export const budgetsRouter = Router()
+
+const ACCOUNT_REF = { id: true, name: true, type: true } as const
+const txSelect = {
+  id: true, amount: true, type: true, createdById: true,
+  fromAccount: { select: ACCOUNT_REF },
+  toAccount: { select: ACCOUNT_REF },
+  template: { select: { fromAccount: { select: ACCOUNT_REF }, toAccount: { select: ACCOUNT_REF } } },
+} as const
 
 // GET /api/budgets?planId=xxx
 budgetsRouter.get('/', async (req: AuthenticatedRequest, res) => {
   const { planId } = req.query
+  const userId = req.user!.sub
   const raw = await db.budget.findMany({
     where: {
-      plan: { ownerId: req.user!.sub },
+      plan: planAccessWhere(userId),
       ...(planId ? { planId: String(planId) } : {}),
     },
     include: {
       template: { select: { name: true, amount: true, defaultAccountId: true } },
-      transactions: { select: { id: true, amount: true, type: true } },
+      plan: { select: { ownerId: true } },
+      transactions: { select: txSelect },
     },
   })
-  const budgets = sortByName(raw.map(({ template, ...b }) => ({
+  const viewer = await loadViewer(db, userId)
+  const budgets = sortByName(raw.map(({ template, plan, transactions, ...b }) => ({
     ...b,
     name: b.name ?? template?.name ?? null,
     amount: b.amount ?? template?.amount ?? null,
     defaultAccountId: b.defaultAccountId ?? template?.defaultAccountId ?? null,
+    transactions: viewForPlan(transactions, viewer, plan.ownerId, b.id),
   })))
   res.json(budgets)
 })
@@ -31,20 +44,23 @@ budgetsRouter.get('/', async (req: AuthenticatedRequest, res) => {
 // GET /api/budgets/:id
 budgetsRouter.get('/:id', async (req: AuthenticatedRequest, res) => {
   const id = String(req.params.id)
+  const userId = req.user!.sub
   const raw = await db.budget.findFirst({
-    where: { id, plan: { ownerId: req.user!.sub } },
+    where: { id, plan: planAccessWhere(userId) },
     include: {
       template: { select: { name: true, amount: true, defaultAccountId: true } },
-      transactions: true,
+      plan: { select: { ownerId: true } },
+      transactions: { select: { ...txSelect, name: true, plannedAmount: true, plannedOn: true, executedOn: true, dueDateConfig: true, templateId: true, planId: true, budgetId: true, fromAccountId: true, toAccountId: true, stateCode: true, statusCode: true, bankTicketId: true } },
     },
   })
   if (!raw) { res.status(404).json({ error: 'Not found' }); return }
-  const { template, ...budget } = raw
+  const { template, plan, transactions, ...budget } = raw
   res.json({
     ...budget,
     name: budget.name ?? template?.name ?? null,
     amount: budget.amount ?? template?.amount ?? null,
     defaultAccountId: budget.defaultAccountId ?? template?.defaultAccountId ?? null,
+    transactions: viewForPlan(transactions, await loadViewer(db, userId), plan.ownerId, budget.id),
   })
 })
 
@@ -54,6 +70,7 @@ budgetsRouter.post('/', async (req: AuthenticatedRequest, res) => {
   // Verify the plan belongs to this user
   const plan = await db.plan.findFirst({ where: { id: planId, ownerId: req.user!.sub } })
   if (!plan) { res.status(403).json({ error: 'Forbidden' }); return }
+  if (!(await canUseAccounts(db, req.user!.sub, [defaultAccountId]))) { res.status(403).json({ error: 'Forbidden' }); return }
   const budget = await db.$transaction(async (tx) => {
     const created = await tx.budget.create({
       data: { ...(id ? { id } : {}), name, amount, planId, defaultAccountId, templateId, stateCode, statusCode },

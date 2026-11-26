@@ -15,6 +15,8 @@ export type TxActionContext = {
   budgetCompleted: boolean
   templateId: string | null
   executed: boolean
+  /** Rows the user may not change, e.g. masked ones or other people's in a shared plan */
+  readOnly?: boolean
 }
 
 type BudgetOption = { value: string | null; label: string }
@@ -106,6 +108,7 @@ export function usePlanTxActions(onChanged: () => void | Promise<unknown>) {
   }
 
   function actionsFor(ctx: TxActionContext): RowAction[] {
+    if (ctx.readOnly) return []
     const active = ctx.planStatus === 1
     const completed = ctx.planStatus === 3
     // Template transactions of active plans are discarded; anything in completed plans or budgets can be deleted

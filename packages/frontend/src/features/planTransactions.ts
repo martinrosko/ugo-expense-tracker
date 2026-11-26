@@ -1,10 +1,14 @@
 import { computePlannedOn } from './helpers'
 
 export type AccountRef = { id: string; name: string; type: string }
-export type Account = AccountRef
+export type Account = AccountRef & { isOwner?: boolean }
+
+export type PlanRole = 'OWNER' | 'CONTRIBUTOR' | 'VIEWER'
 
 export type RawTx = {
   id: string
+  masked?: boolean
+  canEdit?: boolean
   name: string | null
   amount: string | null
   plannedAmount: string | null
@@ -48,6 +52,7 @@ export type RawPlan = {
   isTemplate: boolean
   statusCode: number
   templateId: string | null
+  myRole?: PlanRole
   template: { name: string | null } | null
   budgets: RawBudget[]
   transactions: RawTx[]

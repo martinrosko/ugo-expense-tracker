@@ -19,6 +19,9 @@ model User {
   accounts       Account[]
   plans          Plan[]
   tags           Tag[]
+  coOwnedAccounts AccountCoOwner[]
+  planMemberships PlanMember[]
+  createdTransactions Transaction[] @relation("TxCreatedBy")
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 }
@@ -50,9 +53,23 @@ model Account {
   defaultForBudgets Budget[]      @relation("BudgetDefaultAccount")
   defaultForPlans   Plan[]        @relation("PlanDefaultAccount")
   tags              TagObject[]
+  coOwners          AccountCoOwner[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Extra users with the owner's rights on the account's transactions and bank tickets; never on payment partners.
+model AccountCoOwner {
+  id        String   @id @default(uuid())
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  accountId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([accountId, userId])
+  @@index([userId])
 }
 
 enum AccountType {
@@ -84,10 +101,30 @@ model Plan {
   budgets           Budget[]
   transactions      Transaction[]
   tags              TagObject[]
+  members           PlanMember[]
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
   @@index([statusCode, startDate, endDate])
+}
+
+/// Membership of a template also applies to the plans generated from it.
+model PlanMember {
+  id        String   @id @default(uuid())
+  plan      Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  role      PlanRole
+  createdAt DateTime @default(now())
+
+  @@unique([planId, userId])
+  @@index([userId])
+}
+
+enum PlanRole {
+  VIEWER
+  CONTRIBUTOR
 }
 
 enum PlanIntervalType {
@@ -175,8 +212,13 @@ model Transaction {
   templateId    String?
   instances     Transaction[]   @relation("TxFromTemplate")
   tags          TagObject[]
+  /// Null for rows generated from a template; those count as the plan owner's
+  createdBy     User?           @relation("TxCreatedBy", fields: [createdById], references: [id])
+  createdById   String?
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
+
+  @@index([createdById])
 }
 
 enum TransactionType {

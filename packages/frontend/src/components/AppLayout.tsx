@@ -1,8 +1,9 @@
 import React, { useEffect } from 'react'
-import { Layout, Menu, Typography } from 'antd'
-import { CheckSquareOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined, AreaChartOutlined, LineChartOutlined, SettingOutlined, TagsOutlined } from '@ant-design/icons'
+import { Button, Layout, Menu, Typography } from 'antd'
+import { CheckSquareOutlined, BankOutlined, BarChartOutlined, UnorderedListOutlined, TeamOutlined, FundOutlined, AreaChartOutlined, LineChartOutlined, LogoutOutlined, SettingOutlined, TagsOutlined } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import apiClient from '../api/apiClient'
+import keycloak from '../auth/keycloak'
 
 const { Header, Sider, Content } = Layout
 
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
     icon: <SettingOutlined />,
     children: [
       { key: '/settings/tags', label: 'Tags', icon: <TagsOutlined /> },
+      { key: '/settings/accounts', label: 'Accounts', icon: <BankOutlined /> },
       { key: '/settings/partners', label: 'Partner accounts', icon: <TeamOutlined /> },
     ],
   },
@@ -55,10 +57,14 @@ export default function AppLayout({ children }: AppLayoutProps) {
         />
       </Sider>
       <Layout>
-        <Header style={{ background: '#fff', padding: '0 24px' }}>
-          <Typography.Title level={4} style={{ margin: 0, lineHeight: '64px' }}>
+        <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Typography.Title level={4} style={{ margin: 0 }}>
             Expense Tracker
           </Typography.Title>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Typography.Text type="secondary">{String(keycloak.tokenParsed?.name ?? keycloak.tokenParsed?.preferred_username ?? '')}</Typography.Text>
+            <Button icon={<LogoutOutlined />} onClick={() => void keycloak.logout({ redirectUri: window.location.origin })}>Log out</Button>
+          </div>
         </Header>
         <Content style={{ margin: '24px 16px', padding: 24, background: '#fff', borderRadius: 8 }}>
           {children}

@@ -21,7 +21,7 @@ import {
   Input,
   Select,
 } from 'antd'
-import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined, PlusOutlined, StopOutlined, SyncOutlined, PlayCircleOutlined, HistoryOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, ShareAltOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -36,6 +36,8 @@ import ActivatePlanModal from '../components/ActivatePlanModal'
 import RowActions, { type RowAction } from '../components/RowActions'
 import { usePlanTxActions, rowClickAction, type TxActionContext } from '../features/usePlanTxActions'
 import LogTransactionModal from '../components/LogTransactionModal'
+import PlanMembersModal from '../components/PlanMembersModal'
+import type { PlanRole } from '../features/planTransactions'
 import PlanPerformance from '../components/PlanPerformance'
 import PlanTransactionsDrawer, { type TransactionsScope } from '../components/PlanTransactionsDrawer'
 import { TagsField, useTagSelection } from '../components/TagPicker'
@@ -57,6 +59,8 @@ type PlanDetailed = {
   isTemplate: boolean
   stateCode: number
   statusCode: number
+  /** Unset is treated as owner */
+  myRole?: PlanRole
   budgets: BudgetWithTx[]
   transactions: TxSummary[]
 }
@@ -378,7 +382,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
         onRow={(row) => {
           if (!isTxTreeRow(row) || !txActions || !planId || planStatusCode === undefined) return {}
           const executed = row.tx.executedOn !== null
-          const actions = txActions({ id: row.tx.id, planId, planStatus: planStatusCode, budgetCompleted: row.budgetCompleted, templateId: row.tx.templateId ?? null, executed })
+          const actions = txActions({ id: row.tx.id, planId, planStatus: planStatusCode, budgetCompleted: row.budgetCompleted, templateId: row.tx.templateId ?? null, executed, readOnly: row.tx.canEdit === false })
           return { onClick: () => void rowClickAction(actions, executed)?.onClick(), style: { cursor: 'pointer' } }
         }}
         summary={() => (
@@ -478,7 +482,7 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
                   <RowActions
                     actions={txActions({
                       id: row.tx.id, planId, planStatus: planStatusCode, budgetCompleted: row.budgetCompleted,
-                      templateId: row.tx.templateId ?? null, executed: row.tx.executedOn !== null,
+                      templateId: row.tx.templateId ?? null, executed: row.tx.executedOn !== null, readOnly: row.tx.canEdit === false,
                     })}
                   />
                 )
@@ -491,8 +495,10 @@ function BudgetTable({ budgets, directTxs, scheduled, from, to, planStartDate, p
     </div>
   )
 }
-function PlanHeader({ plan, stats, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences, onLogTransaction, onShowTransactions }: { plan: PlanDetailed; stats: BudgetStats; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void; onLogTransaction?: (plan: PlanDetailed) => void; onShowTransactions?: (scope: TransactionsScope) => void }) {
+function PlanHeader({ plan, stats, onDiscard, onChangeRecurrence, onActivate, onShowOccurrences, onLogTransaction, onShowTransactions, onShare }: { plan: PlanDetailed; stats: BudgetStats; onDiscard?: (plan: PlanDetailed) => void; onChangeRecurrence?: (plan: PlanDetailed) => void; onActivate?: (plan: PlanDetailed) => void; onShowOccurrences?: (plan: PlanDetailed) => void; onLogTransaction?: (plan: PlanDetailed) => void; onShowTransactions?: (scope: TransactionsScope) => void; onShare?: (plan: PlanDetailed) => void }) {
   const navigate = useNavigate()
+  const owner = (plan.myRole ?? 'OWNER') === 'OWNER'
+  const canLog = plan.myRole !== 'VIEWER'
   const dateRange = [plan.startDate, plan.endDate]
     .map((d) => (d ? new Date(d).toLocaleDateString('sk-SK') : ''))
     .filter(Boolean)
@@ -502,30 +508,33 @@ function PlanHeader({ plan, stats, onDiscard, onChangeRecurrence, onActivate, on
   const recurring = !!plan.templateIntervalType && plan.templateIntervalType !== 'ONE_TIME'
 
   const actions: RowAction[] = [
-    ...(plan.statusCode === 1 && !plan.templateId && onDiscard
+    ...(owner && plan.statusCode === 1 && !plan.templateId && onDiscard
       ? [{
         key: 'discard', label: 'Discard plan', icon: <StopOutlined />, danger: true,
         confirm: { title: 'Discard this plan?', description: 'It has no template anymore and will be marked as Cancelled.', okText: 'Discard' },
         onClick: () => onDiscard(plan),
       }]
       : []),
-    ...(plan.statusCode === 0 && !plan.isTemplate && !plan.templateId && plan.intervalType === 'ONE_TIME' && onActivate
+    ...(owner && plan.statusCode === 0 && !plan.isTemplate && !plan.templateId && plan.intervalType === 'ONE_TIME' && onActivate
       ? [{ key: 'activate', label: 'Activate plan', icon: <PlayCircleOutlined />, onClick: () => onActivate(plan) }]
       : []),
     ...(plan.templateId && recurring && onShowOccurrences
       ? [{ key: 'occurrences', label: 'Show all occurrences', icon: <HistoryOutlined />, onClick: () => onShowOccurrences(plan) }]
       : []),
-    ...((plan.statusCode === 1 || plan.statusCode === 2) && plan.templateId && recurring && onChangeRecurrence
+    ...(owner && (plan.statusCode === 1 || plan.statusCode === 2) && plan.templateId && recurring && onChangeRecurrence
       ? [{ key: 'recurrence', label: 'Change recurrence', icon: <SyncOutlined />, onClick: () => onChangeRecurrence(plan) }]
       : []),
     ...(!plan.isTemplate && (plan.statusCode === 1 || plan.statusCode === 3)
       ? [{ key: 'details', label: 'View details', icon: <EyeOutlined />, onClick: () => navigate(`/plans/${plan.id}`) }]
       : []),
-    ...(!plan.isTemplate && (plan.statusCode === 1 || plan.statusCode === 3) && onLogTransaction
+    ...(canLog && !plan.isTemplate && (plan.statusCode === 1 || plan.statusCode === 3) && onLogTransaction
       ? [{ key: 'log', label: 'Log transaction', icon: <PlusOutlined />, onClick: () => onLogTransaction(plan) }]
       : []),
-    ...(plan.statusCode !== 3
+    ...(owner && plan.statusCode !== 3
       ? [{ key: 'edit', label: 'Edit plan', icon: <EditOutlined />, onClick: () => navigate(`/plans/${plan.id}/edit`) }]
+      : []),
+    ...(owner && onShare
+      ? [{ key: 'share', label: 'Share plan', icon: <ShareAltOutlined />, onClick: () => onShare(plan) }]
       : []),
     {
       key: 'transactions', label: 'View transactions', icon: <UnorderedListOutlined />,
@@ -590,6 +599,7 @@ export default function PlansOverviewPage() {
   const createTags = useTagSelection(createOpen)
   const [recurrencePlanId, setRecurrencePlanId] = useState<string | null>(null)
   const [activatePlan, setActivatePlan] = useState<PlanDetailed | null>(null)
+  const [sharePlan, setSharePlan] = useState<PlanDetailed | null>(null)
   const [logTarget, setLogTarget] = useState<{ planId?: string; budgetId?: string | null } | null>(null)
   const [txScope, setTxScope] = useState<TransactionsScope | null>(null)
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
@@ -663,23 +673,27 @@ export default function PlansOverviewPage() {
   }
 
   function templateActions(plan: PlanDetailed): RowAction[] {
+    const owner = (plan.myRole ?? 'OWNER') === 'OWNER'
     return [
       ...(plan.statusCode !== 0 && plan.intervalType !== 'ONE_TIME'
         ? [{ key: 'occurrences', label: 'Show all occurrences', icon: <HistoryOutlined />, onClick: () => showTemplate(plan) }]
         : []),
-      ...(plan.statusCode === 0 ? [{ key: 'activate', label: 'Activate', icon: <PlayCircleOutlined />, onClick: () => setActivatePlan(plan) }] : []),
-      ...(plan.statusCode === 1 && plan.intervalType !== 'ONE_TIME'
-        ? [{ key: 'recurrence', label: 'Change recurrence', icon: <SyncOutlined />, onClick: () => setRecurrencePlanId(plan.id) }]
-        : []),
-      {
-        key: 'edit', label: 'Edit template', icon: <EditOutlined />,
-        onClick: () => navigate(`/plans/${plan.id}/edit`, { state: { returnState: { mode, offset, splitView, expandedTemplateIds } } }),
-      },
-      {
-        key: 'delete', label: 'Delete template', icon: <DeleteOutlined />, danger: true, disabled: deletingPlanId === plan.id,
-        confirm: { title: 'Delete this plan template?', description: 'This action cannot be undone.', okText: 'Delete' },
-        onClick: () => deleteTemplate(plan),
-      },
+      ...(!owner ? [] : [
+        ...(plan.statusCode === 0 ? [{ key: 'activate', label: 'Activate', icon: <PlayCircleOutlined />, onClick: () => setActivatePlan(plan) }] : []),
+        ...(plan.statusCode === 1 && plan.intervalType !== 'ONE_TIME'
+          ? [{ key: 'recurrence', label: 'Change recurrence', icon: <SyncOutlined />, onClick: () => setRecurrencePlanId(plan.id) }]
+          : []),
+        {
+          key: 'edit', label: 'Edit template', icon: <EditOutlined />,
+          onClick: () => navigate(`/plans/${plan.id}/edit`, { state: { returnState: { mode, offset, splitView, expandedTemplateIds } } }),
+        },
+        { key: 'share', label: 'Share template', icon: <ShareAltOutlined />, onClick: () => setSharePlan(plan) },
+        {
+          key: 'delete', label: 'Delete template', icon: <DeleteOutlined />, danger: true, disabled: deletingPlanId === plan.id,
+          confirm: { title: 'Delete this plan template?', description: 'This action cannot be undone.', okText: 'Delete' },
+          onClick: () => deleteTemplate(plan),
+        },
+      ]),
     ]
   }
   function cycleTemplate(step: number) {
@@ -799,8 +813,8 @@ export default function PlansOverviewPage() {
     const stats = planStats(plan, from, to)
     return {
       key: plan.id,
-      label: <PlanHeader plan={plan} stats={stats} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} onLogTransaction={(p) => setLogTarget({ planId: p.id })} onShowTransactions={setTxScope} />,
-      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} onLogTransaction={(planId, budgetId) => setLogTarget({ planId, budgetId })} onShowTransactions={setTxScope} />,
+      label: <PlanHeader plan={plan} stats={stats} onDiscard={discardPlan} onChangeRecurrence={(p) => setRecurrencePlanId(p.id)} onActivate={setActivatePlan} onShowOccurrences={showTemplate} onLogTransaction={(p) => setLogTarget({ planId: p.id })} onShowTransactions={setTxScope} onShare={setSharePlan} />,
+      children: <BudgetTable budgets={plan.budgets ?? []} directTxs={plan.transactions ?? []} scheduled={plan.statusCode === 2} from={from} to={to} planStartDate={plan.startDate} planEndDate={plan.endDate} planId={plan.id} planName={planLabel(plan)} planStatusCode={plan.statusCode} splitView={splitView} txActions={txActions} onLogTransaction={plan.myRole === 'VIEWER' ? undefined : (planId, budgetId) => setLogTarget({ planId, budgetId })} onShowTransactions={setTxScope} />,
     }
   }), [period, splitView, discardPlan, txActions])
 
@@ -834,6 +848,7 @@ export default function PlansOverviewPage() {
         onClose={() => setActivatePlan(null)}
         onActivated={() => setReloadKey((k) => k + 1)}
       />
+      <PlanMembersModal planId={sharePlan?.id ?? null} title={sharePlan ? planLabel(sharePlan) : ''} onClose={() => setSharePlan(null)} />
       <Modal
         open={createOpen}
         title="New plan template"
